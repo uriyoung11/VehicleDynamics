@@ -3,3 +3,5 @@ data/*
 !data/*.py
 __pycache__/
 repro/*/logs/
+checkpoints/
+logs/
