@@ -34,7 +34,7 @@ def main(argv=None):
     ap.add_argument("--epochs", type=int, default=300)
     ap.add_argument("--lr", type=float, default=None, help="기본: m0 1e-3, b1 1e-2")
     ap.add_argument("--batch", type=int, default=1000)
-    ap.add_argument("--patience", type=int, default=30, help="val이 이만큼 안 좋아지면 멈춤")
+    ap.add_argument("--patience", type=int, default=100, help="val이 이 에폭 수만큼 안 좋아지면 멈춤. D1은 초반 30~40에폭 동안 val이 일시적으로 나빠지므로 짧게 잡지 말 것")
     ap.add_argument("--tire", default="fiala", help="b1 타이어 모델")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--threads", type=int, default=4)
