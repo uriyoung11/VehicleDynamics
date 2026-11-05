@@ -5,3 +5,4 @@ __pycache__/
 repro/*/logs/
 checkpoints/
 logs/
+viz/out/
