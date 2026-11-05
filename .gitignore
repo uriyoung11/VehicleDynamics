@@ -1,0 +1,5 @@
+# 데이터 파일은 올리지 않고, data/ 안의 코드만 올린다
+data/*
+!data/*.py
+__pycache__/
+repro/*/logs/
