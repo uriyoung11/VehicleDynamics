@@ -39,6 +39,16 @@ def peak_slip(tire, mu, model="pacejka"):
     raise ValueError("선형 타이어는 포화가 없다")
 
 
+def derate(fx, fz, mu, floor=0.02):
+    """종방향 힘을 μFz·sqrt(1-floor²) 안으로 자르고, 남은 횡방향 최대 마찰계수를 돌려준다.
+    횡력 모델에 이 μ를 넣으면 sqrt(fx^2 + fy^2) <= mu*Fz 가 항상 성립한다.
+    floor는 횡방향 μ가 0이 되어 Pacejka B가 무한대가 되는 것을 막는다."""
+    fmax = mu * fz * math.sqrt(1.0 - floor ** 2)
+    fx_c = torch.maximum(torch.minimum(fx, fmax), -fmax)
+    mu_y = torch.sqrt(torch.clamp(mu ** 2 - (fx_c / fz) ** 2, min=(floor * mu) ** 2))
+    return fx_c, mu_y
+
+
 def friction_ellipse(fx, fy_pure, fz, mu, eps=1e-9):
     """P2: 종방향 힘을 μFz 안으로 자르고, 남은 여유만큼 횡력을 줄인다.
     sqrt(fx^2 + fy^2) <= mu*Fz 가 항상 성립한다."""

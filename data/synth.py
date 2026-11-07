@@ -225,7 +225,7 @@ def main(argv=None):
         w = csv.DictWriter(f, fieldnames=list(rows[0])); w.writeheader(); w.writerows(rows)
     cfg = dict(args=vars(args), vehicle=asdict(base), mu_sets=MU_SETS, channels=CHANNELS, meas=["meas_" + c for c in MEAS],
                regime_bins={"normal": "<0.5", "nonlinear": "0.5-1.0", "saturated": ">1.0"},
-               model="P2 (pacejka, load transfer, friction ellipse)")
+               model="P2 (pacejka, load transfer, combined slip: derate)")
     with open(os.path.join(args.out, "config.json"), "w") as f:
         json.dump(cfg, f, indent=1, default=str)
     print(f"done: {args.out} ({time.time() - t0:.0f}s)")

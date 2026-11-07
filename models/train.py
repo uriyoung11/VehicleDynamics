@@ -3,7 +3,7 @@
   python -m models.train --data d1 --model m0 --seed 0
   python -m models.train --data d1 --model b1
   python -m models.train --data d2 --model m0
-  python -m models.train --data d3:data/generated/f1tenth_v2_trial --model m0
+  python -m models.train --data d3:data/generated/f1tenth_v3_trial --model m0
 
 체크포인트: checkpoints/<data 이름>/<model>_s<seed>.pt
 """

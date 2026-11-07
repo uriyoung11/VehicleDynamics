@@ -11,7 +11,7 @@
 
   from data.datasets import load
   train = load("d1", "train"); test = load("d2", "test")
-  d3 = load("d3:data/generated/f1tenth_v2_trial", "test_mu_interp")
+  d3 = load("d3:data/generated/f1tenth_v3_trial", "test_mu_interp")
 """
 import glob, os
 import numpy as np

@@ -116,6 +116,34 @@ def test_generator_and_loader():
         assert X.shape[1] == 20 and len(X) == len(Y)
 
 
+def test_derate_friction_circle():
+    """결합 방식 "derate"도 마찰원 sqrt(Fx²+Fy²) <= μFz를 지킨다."""
+    gen = torch.Generator().manual_seed(1)
+    opt = ModelOptions(combined="derate")
+    for p in (FULLSCALE, F1TENTH):
+        x, u = random_states(4000, p, gen)
+        for mu in (0.3, 1.0):
+            f = forces(x, u, p, mu, opt)
+            for ax in "fr":
+                tot = torch.hypot(f["fx" + ax], f["fy" + ax]) / (mu * f["fz" + ax])
+                assert tot.max() <= 1.0 + 1e-9, (p.name, mu, ax, tot.max().item())
+
+
+def test_commonroad_match():
+    """CommonRoad vehicle models와 같은 상태에서 미분값 비교 (패키지가 없으면 건너뜀).
+    P0 ~ ST: 작은 각도(0.01 rad)에서 0.1% 이내. P1 ~ STD: 1% 이내."""
+    try:
+        import vehiclemodels  # noqa: F401
+    except ImportError:
+        print("  (commonroad-vehicle-models 미설치, 건너뜀)"); return
+    from physics.commonroad_check import cr_params, our_params, compare_p0_st, compare_p1_std
+    p = cr_params(); vp, mu = our_params(p)
+    row = [r for r in compare_p0_st(p, vp, mu, n=500) if r["eps"] == 0.01][0]
+    assert row["rel_r"] < 1e-3 and row["rel_beta"] < 1e-3, row
+    for row in compare_p1_std(p, vp, mu, n=100):
+        assert row["rel_r"] < 1e-2 and row["rel_beta"] < 1e-2, row
+
+
 if __name__ == "__main__":
     fails = 0
     for name, fn in list(globals().items()):

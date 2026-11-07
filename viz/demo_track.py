@@ -3,7 +3,7 @@
 시나리오: 마른 노면(μ 0.7)을 기준으로 속도를 정한 운전자가, 가장 빠른 코너에 있는 젖은 구간(μ 0.4)에
 모르고 들어간다. 이때 각 모델의 1초 예측이 실제 궤적과 얼마나 벌어지는지 본다.
 
-  python -m viz.demo_track --ckpt checkpoints/f1tenth_v2_trial/m0_s0.pt checkpoints/f1tenth_v2_trial/b1_s0.pt
+  python -m viz.demo_track --ckpt checkpoints/f1tenth_v3_trial/m0_s0.pt checkpoints/f1tenth_v3_trial/b1_s0.pt
 
 출력: viz/out/demo_track.mp4, docs/figures/demo_track_frame.png
 트랙: data/tracks/Spielberg_centerline.csv (github.com/f1tenth/f1tenth_racetracks)
