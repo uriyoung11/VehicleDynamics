@@ -75,7 +75,8 @@ class B1Bike(nn.Module):
 
 
 def build(kind, **kw):
-    return {"m0": M0MLP, "b1": B1Bike}[kind](**kw)
+    from models.hybrid import M1Residual, M2TireNN, M3PINN
+    return {"m0": M0MLP, "b1": B1Bike, "m1": M1Residual, "m2": M2TireNN, "m3": M3PINN}[kind](**kw)
 
 
 def load_checkpoint(path):
