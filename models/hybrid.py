@@ -61,6 +61,24 @@ def mlp(n_in, hidden, n_out, act=nn.Softplus, zero_last=False):
     return net
 
 
+GUARD = dict(stiffness=(0.3, 3.0), mu=(0.1, 1.5), inertia=(0.5, 2.0))   # 공칭값 대비 배율. μ는 절대값
+LEARN_IZ = False
+
+
+class Guarded(nn.Module):
+    """lo + (hi - lo) * sigmoid(raw). 초기값 v0에서 시작하고 [lo, hi]를 벗어나지 않는다."""
+
+    def __init__(self, v0, lo, hi, trainable=True):
+        super().__init__()
+        self.lo, self.hi = float(lo), float(hi)
+        u = min(max((v0 - lo) / (hi - lo), 1e-4), 1 - 1e-4)
+        self.raw = nn.Parameter(torch.tensor(math.log(u / (1 - u)), dtype=torch.float64), requires_grad=trainable)
+        self.trainable = trainable
+
+    def forward(self):
+        return self.lo + (self.hi - self.lo) * torch.sigmoid(self.raw)
+
+
 def _buf(v, default):
     return torch.as_tensor(v if v is not None else default, dtype=torch.float64)
 
@@ -72,11 +90,15 @@ class PhysCore(nn.Module):
         super().__init__()
         self.vehicle, self.long_kind = vehicle, long_kind
         self.register_buffer("long_scale", torch.tensor(float(long_scale), dtype=torch.float64))
-        self.log_cf = nn.Parameter(torch.zeros((), dtype=torch.float64))
-        self.log_cr = nn.Parameter(torch.zeros((), dtype=torch.float64))
-        self.log_mu = nn.Parameter(torch.zeros((), dtype=torch.float64))
-        self.log_k = nn.Parameter(torch.tensor(math.log(max(motor_k0, 1e-6)), dtype=torch.float64),
-                                  requires_grad=(long_kind == "motor_current"))
+        # 물리 파라미터는 물리적으로 말이 되는 범위 안에서만 움직인다(Deep Dynamics의 Physics Guard).
+        # 범위가 없으면 신경망이 물리를 지우고 대신 떠맡는다(11/12 첫 학습: D1에서 μ -> 0.05).
+        self.cf = Guarded(1.0, *GUARD["stiffness"])
+        self.cr = Guarded(1.0, *GUARD["stiffness"])
+        self.mu_ = Guarded(1.0, *GUARD["mu"])
+        # Iz는 학습하지 않는다. 학습하게 두면 D1에서 세 모델 모두 상한(2배)에 붙고 롤아웃이 발산했다(11/12).
+        self.iz = Guarded(1.0, *GUARD["inertia"], trainable=LEARN_IZ)
+        k0 = max(motor_k0, 1e-6)
+        self.k = Guarded(k0, k0 / 5, k0 * 5, trainable=(long_kind == "motor_current"))
 
     @property
     def base(self):
@@ -88,16 +110,16 @@ class PhysCore(nn.Module):
 
     def total_fx(self, long):
         x = long * self.long_scale
-        return x if self.long_kind == "force_front" else torch.exp(self.log_k) * x
+        return x if self.long_kind == "force_front" else self.k() * x
 
     def params(self):
         b, s = self.base, self.front_share()
-        return replace(b, drive_front=s, brake_front=s,
-                       tire_f=replace(b.tire_f, c_alpha=b.tire_f.c_alpha * torch.exp(self.log_cf)),
-                       tire_r=replace(b.tire_r, c_alpha=b.tire_r.c_alpha * torch.exp(self.log_cr)))
+        return replace(b, drive_front=s, brake_front=s, Iz=b.Iz * self.iz(),
+                       tire_f=replace(b.tire_f, c_alpha=b.tire_f.c_alpha * self.cf()),
+                       tire_r=replace(b.tire_r, c_alpha=b.tire_r.c_alpha * self.cr()))
 
     def mu(self):
-        return torch.exp(self.log_mu)
+        return self.mu_()
 
     def deriv(self, last):
         """last: (B, 5) 현재 시점. 반환 (B, 2) [r_dot, Uy_dot]."""
@@ -110,9 +132,10 @@ class PhysCore(nn.Module):
     def fitted(self):
         with torch.no_grad():
             p = self.params()
-            out = dict(c_alpha_f=p.tire_f.c_alpha.item(), c_alpha_r=p.tire_r.c_alpha.item(), mu=self.mu().item())
+            out = dict(c_alpha_f=p.tire_f.c_alpha.item(), c_alpha_r=p.tire_r.c_alpha.item(), mu=self.mu().item(),
+                       Iz=float(p.Iz))
             if self.long_kind == "motor_current":
-                out["motor_k"] = torch.exp(self.log_k).item()
+                out["motor_k"] = self.k().item()
             return out
 
 
@@ -128,19 +151,45 @@ class _Standardize(nn.Module):
 # ---------------------------------------------------------------- M1
 
 class M1Residual(nn.Module):
+    """2단계 학습. Kabzan et al. 2019처럼 공칭 모델을 먼저 정하고 잔차를 배운다.
+      1단계(stage=1): 잔차를 끄고 물리 파라미터만 맞춘다. B1과 같은 일.
+      2단계(stage=2): 물리를 고정하고 잔차만 배운다. 잔차 크기에 L2 벌점(lam_r)을 줘서
+                      물리가 설명할 수 있는 부분은 물리에 남긴다.
+    한꺼번에 학습하면 물리와 잔차가 서로 큰 값을 상쇄하는 해로 빠지고, 그 상쇄가 롤아웃에서 깨지며 발산했다(11/12)."""
+
+    stages = (1, 2)
+
     def __init__(self, vehicle, long_kind="force_front", long_scale=1.0, motor_k0=1.0, T=4, dt=0.01,
-                 hidden=(128, 128), x_mean=None, x_std=None, d_mean=None, d_std=None):
+                 hidden=(128, 128), x_mean=None, x_std=None, d_mean=None, d_std=None, lam_r=1.0):
         super().__init__()
-        self.T, self.dt = T, dt
+        self.T, self.dt, self.lam_r = T, dt, lam_r
         self.phys = PhysCore(vehicle, long_kind, long_scale, motor_k0)
         self.std = _Standardize(x_mean, x_std)
         self.net = mlp(5 * T, hidden, 2, zero_last=True)
         self.register_buffer("d_std", _buf(d_std, [1.0]))
+        self.stage = 2   # 학습이 끝난 모델은 2단계(잔차 켜짐)
+
+    def set_stage(self, stage):
+        self.stage = stage
+        for g in (self.phys.cf, self.phys.cr, self.phys.mu_, self.phys.iz, self.phys.k):
+            g.raw.requires_grad_(stage == 1 and g.trainable)
+        for p in self.net.parameters():
+            p.requires_grad_(stage == 2)
+
+    def residual(self, hist):
+        return self.net(self.std(hist)) * self.d_std
 
     def forward(self, hist):
         last = hist[:, -1]
-        d = self.phys.deriv(last) + self.net(self.std(hist)) * self.d_std
+        d = self.phys.deriv(last)
+        if self.stage == 2:
+            d = d + self.residual(hist)
         return last[:, :2] + self.dt * d
+
+    def physics_loss(self, X):
+        if self.stage != 2 or self.lam_r <= 0:
+            return 0.0
+        return self.lam_r * ((self.residual(X) / self.d_std) ** 2).mean()
 
     def param_groups(self, lr):
         return [dict(params=self.net.parameters(), lr=lr), dict(params=self.phys.parameters(), lr=10 * lr)]
@@ -152,50 +201,57 @@ class M1Residual(nn.Module):
 # ---------------------------------------------------------------- M2
 
 class _AxleTire(nn.Module):
-    """한 축의 타이어 횡력 계수 g ∈ (-1, 1). Fy = -μ̂·Fz·g. α에 대해 홀함수, 상한 1."""
+    """한 축의 타이어 횡력 계수 ∈ (-1, 1). Fy = -μ̂·Fz·(이 값).
+    입력 슬립각은 과거 T스텝 이력이다. 실제 타이어는 슬립각 변화에 늦게 반응한다(relaxation length).
+    이력 전체의 부호를 함께 뒤집은 값과 빼서 홀함수로 만든다 -> 슬립이 계속 0이면 힘 0, 좌우 대칭."""
 
-    def __init__(self, c_alpha, hidden=(64, 64)):
+    def __init__(self, c_alpha, T=4, hidden=(80, 80)):
         super().__init__()
         self.c = c_alpha                       # 하중 정규화 코너링 강성 [1/rad] (μ로 나눈 값은 forward에서)
-        self.net = mlp(3, hidden, 1, act=nn.Tanh, zero_last=True)
+        self.net = mlp(T + 2, hidden, 1, act=nn.Tanh, zero_last=True)
 
-    def forward(self, alpha, fx_n, ux_n, mu):
-        g = lambda a: self.net(torch.stack([a / 0.1, fx_n, ux_n], -1))[:, 0]
-        return torch.tanh(self.c / mu * alpha + g(alpha) - g(-alpha))
+    def forward(self, alpha_hist, fx_n, ux_n, mu):
+        """alpha_hist: (B, T), 마지막 열이 현재."""
+        g = lambda a: self.net(torch.cat([a / 0.1, fx_n[:, None], ux_n[:, None]], -1))[:, 0]
+        return torch.tanh(self.c / mu * alpha_hist[:, -1] + g(alpha_hist) - g(-alpha_hist))
 
 
 class M2TireNN(nn.Module):
     def __init__(self, vehicle, long_kind="force_front", long_scale=1.0, motor_k0=1.0, T=4, dt=0.01,
-                 hidden=(80, 80), mu_hidden=(64, 64), x_mean=None, x_std=None, ux_scale=None, **_):
+                 hidden=(79, 79), mu_hidden=(64, 64), x_mean=None, x_std=None, ux_scale=None, **_):
         super().__init__()
         self.T, self.dt = T, dt
         self.vehicle = vehicle
         self.phys = PhysCore(vehicle, long_kind, long_scale, motor_k0)   # 종방향 입력 해석(모터 이득)만 사용
         self.std = _Standardize(x_mean, x_std)
         p = PRESETS[vehicle]
-        self.tire_f, self.tire_r = _AxleTire(p.tire_f.c_alpha, hidden), _AxleTire(p.tire_r.c_alpha, hidden)
+        self.tire_f, self.tire_r = _AxleTire(p.tire_f.c_alpha, T, hidden), _AxleTire(p.tire_r.c_alpha, T, hidden)
         self.mu_net = mlp(5 * T, mu_hidden, 1, zero_last=True)
         self.register_buffer("ux_scale", torch.tensor(float(ux_scale or p.ux_target_range[1]), dtype=torch.float64))
-        self.mu_bias = math.log(math.e - 1)    # softplus(mu_bias) = 1 → 처음 μ̂ = 1
+        lo, hi = GUARD["mu"]
+        self.mu_lo, self.mu_hi = lo, hi
+        self.mu_bias = math.log((1.0 - lo) / (hi - 1.0))   # 처음 μ̂ = 1
 
     def mu_hat(self, hist):
-        return 0.05 + F.softplus(self.mu_net(self.std(hist))[:, 0] + self.mu_bias)
+        """과거 이력으로 추정한 노면 마찰. 물리 범위 [0.1, 1.5]로 묶는다(11/12 첫 학습에서 7.8까지 올라갔다)."""
+        return self.mu_lo + (self.mu_hi - self.mu_lo) * torch.sigmoid(self.mu_net(self.std(hist))[:, 0] + self.mu_bias)
 
     def forces(self, hist):
         p = PRESETS[self.vehicle]
         last = hist[:, -1]
-        r, uy, ux, delta = last[:, 0], last[:, 1], torch.clamp(last[:, 2], min=UX_MIN), last[:, 3]
+        ux = torch.clamp(last[:, 2], min=UX_MIN)
+        rh, uyh, uxh, dh = hist[:, :, 0], hist[:, :, 1], torch.clamp(hist[:, :, 2], min=UX_MIN), hist[:, :, 3]
+        afh = torch.atan((uyh + p.a * rh) / uxh) - dh          # (B, T) 슬립각 이력
+        arh = torch.atan((uyh - p.b * rh) / uxh)
         fx = self.phys.total_fx(last[:, 4])
         s = self.phys.front_share()
         fxf, fxr = s * fx, (1 - s) * fx
         fzf, fzr = p.m * p.g * p.b / p.L, p.m * p.g * p.a / p.L
-        af = torch.atan((uy + p.a * r) / ux) - delta
-        ar = torch.atan((uy - p.b * r) / ux)
         mu = self.mu_hat(hist)
         ux_n = ux / self.ux_scale
-        fyf = -mu * fzf * self.tire_f(af, fxf / fzf, ux_n, mu)
-        fyr = -mu * fzr * self.tire_r(ar, fxr / fzr, ux_n, mu)
-        return dict(fyf=fyf, fyr=fyr, fxf=fxf, af=af, ar=ar, mu=mu)
+        fyf = -mu * fzf * self.tire_f(afh, fxf / fzf, ux_n, mu)
+        fyr = -mu * fzr * self.tire_r(arh, fxr / fzr, ux_n, mu)
+        return dict(fyf=fyf, fyr=fyr, fxf=fxf, af=afh[:, -1], ar=arh[:, -1], mu=mu)
 
     def forward(self, hist):
         p = PRESETS[self.vehicle]
@@ -204,7 +260,7 @@ class M2TireNN(nn.Module):
         f = self.forces(hist)
         lat_f = f["fyf"] * torch.cos(delta) + f["fxf"] * torch.sin(delta)
         uy_dot = (lat_f + f["fyr"]) / p.m - r * ux
-        r_dot = (p.a * lat_f - p.b * f["fyr"]) / p.Iz
+        r_dot = (p.a * lat_f - p.b * f["fyr"]) / (p.Iz * self.phys.iz())   # Iz는 범위 안에서 학습(Deep Dynamics처럼)
         return last[:, :2] + self.dt * torch.stack([r_dot, uy_dot], -1)
 
     def param_groups(self, lr):
@@ -212,8 +268,7 @@ class M2TireNN(nn.Module):
                 dict(params=self.phys.parameters(), lr=10 * lr)]
 
     def fitted(self):
-        out = {k: v for k, v in self.phys.fitted().items() if k == "motor_k"}
-        return out or None
+        return {k: v for k, v in self.phys.fitted().items() if k in ("motor_k", "Iz")}
 
 
 # ---------------------------------------------------------------- M3

@@ -52,6 +52,8 @@ def main(argv=None):
     ap.add_argument("--mu-max", type=float, default=1.2, help="m3: 마찰 한계 벌점의 μ 상한 (μ를 모르므로 넉넉하게)")
     ap.add_argument("--lam-c", type=float, default=1.0, help="m3: 제약(마찰 한계·부호) 벌점 가중치")
     ap.add_argument("--lam-m", type=float, default=0.1, help="m3: P1 물리 잔차 벌점 가중치")
+    ap.add_argument("--lam-r", type=float, default=1.0, help="m1: 잔차 크기(L2) 벌점 가중치. 0.01이면 D1 롤아웃이 발산했다(11/12)")
+    ap.add_argument("--stage1-epochs", type=int, default=100, help="m1: 1단계(물리만) 최대 에폭")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--threads", type=int, default=4)
     ap.add_argument("--out", default=None)
@@ -71,6 +73,8 @@ def main(argv=None):
     elif args.model in ("m1", "m2", "m3"):
         init = stats | dict(vehicle=tr[0]["vehicle"], long_kind=tr[0]["long_kind"], long_scale=tr[0]["long_scale"],
                             motor_k0=motor_gain_init(Xtr, tr[0], dt))
+        if args.model == "m1":
+            init |= dict(lam_r=args.lam_r)
         if args.model == "m3":
             init |= dict(mu_max=args.mu_max, lam_c=args.lam_c, lam_m=args.lam_m,
                          state_std=Xtr[:, -1, [0, 1, 3]].std(0).tolist())
@@ -86,36 +90,54 @@ def main(argv=None):
     Xtr, Ytr, Xva, Yva = map(T_, (Xtr, Ytr, Xva, Yva))
     scale = T_(dt * d_std)  # 표준화: 미분 오차 / 미분 표준편차
     loss_fn = lambda m, X, Y: (((m(X) - Y) / scale) ** 2).mean(0)
-    opt = torch.optim.Adam(model.param_groups(lr) if hasattr(model, "param_groups") else model.parameters(), lr=lr)
     phys_loss = getattr(model, "physics_loss", None)
+    t0, hist = time.time(), []
 
-    best, best_state, bad, hist, t0 = np.inf, None, 0, [], time.time()
-    for ep in range(args.epochs):
-        model.train()
-        perm = torch.randperm(len(Xtr))
-        for i in range(0, len(Xtr), args.batch):
-            idx = perm[i:i + args.batch]
-            opt.zero_grad()
-            l = loss_fn(model, Xtr[idx], Ytr[idx]).mean()
-            if phys_loss is not None:
-                l = l + phys_loss(Xtr[idx])
-            l.backward(); opt.step()
-        model.eval()
-        with torch.no_grad():
-            v = loss_fn(model, Xva, Yva); vm = float(v.mean())
-        hist.append(dict(epoch=ep, val=v.tolist()))
-        if vm < best - 1e-6:
-            best, bad = vm, 0
-            best_state = {k: t.clone() for k, t in model.state_dict().items()}
-        else:
-            bad += 1
-        if ep % 10 == 0 or bad == 0 and ep < 5:
-            print(f"[{args.model} {data_tag(args.data)} s{args.seed}] ep {ep:3d} {time.time()-t0:5.0f}s val nMSE r {v[0]:.4f} Uy {v[1]:.4f}", flush=True)
-        if bad >= args.patience:
-            print(f"early stop at epoch {ep}")
-            break
+    def make_opt():
+        groups = model.param_groups(lr) if hasattr(model, "param_groups") else [dict(params=model.parameters(), lr=lr)]
+        groups = [dict(g, params=[q for q in g["params"] if q.requires_grad]) for g in groups]
+        return torch.optim.Adam([g for g in groups if g["params"]], lr=lr)
 
-    model.load_state_dict(best_state)
+    def fit(epochs, label):
+        """한 단계 학습. 검증 오차가 가장 좋았던 상태로 돌아가 끝낸다."""
+        opt = make_opt()
+        best, best_state, bad = np.inf, None, 0
+        for ep in range(epochs):
+            model.train()
+            perm = torch.randperm(len(Xtr))
+            for i in range(0, len(Xtr), args.batch):
+                idx = perm[i:i + args.batch]
+                opt.zero_grad()
+                l = loss_fn(model, Xtr[idx], Ytr[idx]).mean()
+                if phys_loss is not None:
+                    l = l + phys_loss(Xtr[idx])
+                l.backward(); opt.step()
+            model.eval()
+            with torch.no_grad():
+                v = loss_fn(model, Xva, Yva); vm = float(v.mean())
+            hist.append(dict(stage=label, epoch=ep, val=v.tolist()))
+            if vm < best - 1e-6:
+                best, bad = vm, 0
+                best_state = {k: t.clone() for k, t in model.state_dict().items()}
+            else:
+                bad += 1
+            if ep % 10 == 0 or bad == 0 and ep < 5:
+                print(f"[{args.model}{label} {data_tag(args.data)} s{args.seed}] ep {ep:3d} {time.time()-t0:5.0f}s val nMSE r {v[0]:.4f} Uy {v[1]:.4f}", flush=True)
+            if bad >= args.patience:
+                print(f"early stop at epoch {ep}")
+                break
+        model.load_state_dict(best_state)
+        return best
+
+    if hasattr(model, "stages"):   # M1: 1단계 물리만 -> 2단계 물리 고정 + 잔차
+        for st in model.stages:
+            model.set_stage(st)
+            best = fit(args.stage1_epochs if st == 1 else args.epochs, f"/{st}")
+            if st == 1 and hasattr(model, "fitted"):
+                print("1단계 물리 파라미터", json.dumps(model.fitted()), flush=True)
+    else:
+        best = fit(args.epochs, "")
+
     out = args.out or os.path.join(ROOT, "checkpoints", data_tag(args.data), f"{args.model}_s{args.seed}.pt")
     os.makedirs(os.path.dirname(out), exist_ok=True)
     info = dict(data=args.data, train=summary(tr), val=summary(va), best_val_nmse=best, epochs_run=len(hist),
