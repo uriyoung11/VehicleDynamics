@@ -1,0 +1,178 @@
+"""Thunderhill West 트랙 중심선과 폭을 만든다 (공개 경계 파일이 없어서).
+
+  python -m data.thunderhill_west                  # OSM 중앙선 + 레이싱 라인으로 폭 (기본)
+  python -m data.thunderhill_west --source driven  # 이전 방식: 주행선 양옆 고정 폭
+  -> data/tracks/ThunderhillWest_centerline.csv, docs/figures/thunderhill_west.png
+
+osm (기본)
+  1. D7에서 깨끗한 한 바퀴를 찾아 경로 기준으로 쓴다.
+  2. OpenStreetMap(© OpenStreetMap contributors, ODbL)의 West 코스 highway=raceway 선(노면 중앙선)에서
+     그 경로를 따라 가장 가까운 점을 모아 중앙선으로 쓴다. D7 좌표는 D1 트랙 자료와 같은 지역 좌표계다.
+  3. 폭: 지점마다 레이싱 라인이 좌우로 간 최대 거리 + 차 반폭. 레이싱 라인이 가지 않는 쪽은 최소 반폭.
+driven (이전)
+  주행 위치의 좌우 범위 가운데를 중심선으로, 범위 + 여유를 폭으로 쓴다. 자율주행 차가 거의 같은 선만 달려
+  범위가 1 m 남짓이라 사실상 "주행선 양옆 고정 폭"이 된다.
+주의: 어느 쪽이든 공식 노면 경계가 아니다. 폭은 실제보다 좁을 수 있다(MPC에는 보수적).
+형식은 f1tenth_racetracks와 같다: x_m, y_m, w_tr_right_m, w_tr_left_m (viz.demo_track.load_track으로 읽힘).
+"""
+import argparse, glob, os
+import numpy as np
+import pandas as pd
+from scipy.ndimage import gaussian_filter1d
+from scipy.spatial import cKDTree
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def positions(f):
+    d = pd.read_csv(f, comment="#", usecols=["posE_m", "posN_m", "Vx_mps"])
+    d = d[d.Vx_mps > 5]
+    return d[["posE_m", "posN_m"]].to_numpy()
+
+
+def find_lap(xy, min_len=1000.0, close=5.0):
+    s = np.r_[0, np.cumsum(np.linalg.norm(np.diff(xy, axis=0), axis=1))]
+    for i0 in range(0, len(xy) // 3, 200):
+        far = np.flatnonzero(s - s[i0] > min_len)
+        if not len(far):
+            break
+        j = far[0] + np.argmin(np.linalg.norm(xy[far[0]:] - xy[i0], axis=1)[: 20000])
+        if np.linalg.norm(xy[j] - xy[i0]) < close:
+            return xy[i0:j]
+    return None
+
+
+def resample_closed(xy, ds=1.0, sigma=2.0):
+    s = np.r_[0, np.cumsum(np.linalg.norm(np.diff(np.r_[xy, xy[:1]], axis=0), axis=1))]
+    n = int(s[-1] / ds)
+    t = np.linspace(0, s[-1], n, endpoint=False)
+    p = np.c_[np.interp(t, s, np.r_[xy[:, 0], xy[0, 0]]), np.interp(t, s, np.r_[xy[:, 1], xy[0, 1]])]
+    return np.c_[gaussian_filter1d(p[:, 0], sigma, mode="wrap"), gaussian_filter1d(p[:, 1], sigma, mode="wrap")]
+
+
+# D1(Spielberg) 트랙 자료의 지역 좌표 기준점(ECEF). D7 위치(posE, posN)도 같은 기준이다(OSM 선과 2 m 안으로 겹침, 11/17 확인)
+REF_ECEF = np.array([-2634230.47253972, -4161936.65368287, 4038639.74184999])   # 북위 39.538493°, 서경 122.331103°
+OSM_CACHE = os.path.join(ROOT, "data", "tracks", "thunderhill_osm.json")
+OSM_WEST_WAYS = (756822999, 756823000, 1016088342)    # D7 경로와 겹치는 OSM highway=raceway 선 (Thunderhill West)
+
+
+def fetch_osm():
+    """OpenStreetMap(ODbL) Thunderhill 주변 highway=raceway 선. 처음 한 번 Overpass API로 받아 data/tracks/에 캐시한다."""
+    import json
+    if not os.path.exists(OSM_CACHE):
+        import urllib.parse, urllib.request
+        q = ('[out:json][timeout:60];(way["highway"="raceway"](around:3500,39.5385,-122.3311););out tags geom;')
+        req = urllib.request.Request("https://overpass-api.de/api/interpreter", data=urllib.parse.urlencode({"data": q}).encode(),
+                                     headers={"User-Agent": "VehicleDynamicsResearch/0.1 (academic project)", "Accept": "application/json"})
+        os.makedirs(os.path.dirname(OSM_CACHE), exist_ok=True)
+        open(OSM_CACHE, "wb").write(urllib.request.urlopen(req, timeout=90).read())
+    return json.load(open(OSM_CACHE, encoding="utf-8"))
+
+
+def to_local(lat, lon):
+    """위도·경도 → D1/D7 지역 좌표 [동쪽, 북쪽] (m)."""
+    a, f = 6378137.0, 1 / 298.257223563
+    e2 = f * (2 - f)
+    la, lo = np.radians(lat), np.radians(lon)
+    N = a / np.sqrt(1 - e2 * np.sin(la) ** 2)
+    X = np.c_[N * np.cos(la) * np.cos(lo), N * np.cos(la) * np.sin(lo), N * (1 - e2) * np.sin(la)] - REF_ECEF
+    la0, lo0 = np.radians(39.538493), np.radians(-122.331103)
+    R = np.array([[-np.sin(lo0), np.cos(lo0), 0], [-np.sin(la0) * np.cos(lo0), -np.sin(la0) * np.sin(lo0), np.cos(la0)]])
+    return X @ R.T
+
+
+def osm_centerline(ref, max_dist=8.0):
+    """D7 한 바퀴(ref)를 따라가며 가장 가까운 OSM 노면 중앙선 점을 모은다(D7이 달린 경로 부분만)."""
+    d = fetch_osm()
+    dense = []
+    for e in d["elements"]:
+        if e["id"] not in OSM_WEST_WAYS:
+            continue
+        Q = to_local(np.array([p["lat"] for p in e["geometry"]]), np.array([p["lon"] for p in e["geometry"]]))
+        for i in range(len(Q) - 1):
+            n = max(2, int(np.linalg.norm(Q[i + 1] - Q[i]) / 0.25))
+            dense.append(np.linspace(Q[i], Q[i + 1], n))
+    dense = np.vstack(dense)
+    dist, k = cKDTree(dense).query(ref)
+    assert dist.max() < max_dist, f"OSM 선이 D7 경로에서 {dist.max():.1f} m 떨어진 곳이 있다"
+    return resample_closed(dense[k], 1.0, sigma=3.0)
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--source", choices=["osm", "driven"], default="osm",
+                    help="osm: OpenStreetMap 노면 중앙선 + 레이싱 라인 범위로 폭 (기본). driven: 주행선 양옆 고정 폭 (이전 방식)")
+    ap.add_argument("--margin", type=float, default=1.0, help="driven: 다닌 범위 바깥에 더할 여유 [m]")
+    ap.add_argument("--min-width", type=float, default=8.8, help="최소 트랙 폭 [m] (Stanford 공개 Thunderhill 본 코스 경계 폭 중앙값 8.8 m)")
+    ap.add_argument("--car-half", type=float, default=0.9, help="osm: 차 반폭 [m]. 레이싱 라인(차 중심) 바깥으로 이만큼 노면이 있어야 한다")
+    ap.add_argument("--window", type=int, default=15, help="osm: 폭을 볼 앞뒤 범위 [m]")
+    args = ap.parse_args(argv)
+    files = [f for f in sorted(glob.glob(os.path.join(ROOT, "data", "d7", "*.csv")))
+             if os.path.basename(f)[:-4] not in ("2023-10_2", "2023-10_3")]
+    P = [positions(f) for f in files]
+    lap = next((l for l in (find_lap(p) for p in P) if l is not None), None)
+    assert lap is not None, "닫힌 한 바퀴를 찾지 못함"
+    ref = resample_closed(lap)
+    t = np.gradient(ref, axis=0); t /= np.linalg.norm(t, axis=1, keepdims=True)
+    nrm = np.stack([-t[:, 1], t[:, 0]], 1)                       # 진행 방향 왼쪽
+    allp = np.vstack(P)
+    if args.source == "osm":
+        center = osm_centerline(ref)
+        t = np.gradient(center, axis=0); t /= np.linalg.norm(t, axis=1, keepdims=True)
+        nrm = np.stack([-t[:, 1], t[:, 0]], 1)
+        j = cKDTree(center).query(allp)[1]
+        e = np.sum((allp - center[j]) * nrm[j], 1)                 # 레이싱 라인의 중앙선 대비 오프셋 (왼쪽 +)
+        hl, hr = np.full(len(center), np.nan), np.full(len(center), np.nan)
+        for k in range(len(center)):
+            w = e[np.abs(j - k) <= args.window]
+            if len(w) > 20:
+                hl[k], hr[k] = max(np.percentile(w, 99.5), 0.0), max(-np.percentile(w, 0.5), 0.0)
+        idx = np.arange(len(center)); ok = np.isfinite(hl)
+        hl = np.interp(idx, idx[ok], hl[ok]); hr = np.interp(idx, idx[ok], hr[ok])
+        # 반폭 = 레이싱 라인이 그쪽으로 간 최대 거리 + 차 반폭. 데이터가 없는 쪽은 최소 반폭
+        wl = gaussian_filter1d(np.maximum(hl + args.car_half, args.min_width / 2), 5, mode="wrap")
+        wr = gaussian_filter1d(np.maximum(hr + args.car_half, args.min_width / 2), 5, mode="wrap")
+        note = "OSM 노면 중앙선 + D7 레이싱 라인 범위로 추정한 폭"
+        spread = hl + hr
+    else:
+        j = cKDTree(ref).query(allp)[1]
+        e = np.sum((allp - ref[j]) * nrm[j], 1)
+        lo, hi = np.full(len(ref), np.nan), np.full(len(ref), np.nan)
+        for k in range(len(ref)):
+            w = e[np.abs(j - k) <= 2]                                   # 앞뒤 2 m 안
+            if len(w) > 20:
+                lo[k], hi[k] = np.percentile(w, [0.5, 99.5])
+        ok = np.isfinite(lo)
+        idx = np.arange(len(ref))
+        lo = np.interp(idx, idx[ok], lo[ok]); hi = np.interp(idx, idx[ok], hi[ok])
+        lo, hi = gaussian_filter1d(lo, 5, mode="wrap"), gaussian_filter1d(hi, 5, mode="wrap")
+        mid = (lo + hi) / 2
+        center = ref + nrm * mid[:, None]
+        wl = wr = np.maximum((hi - lo) / 2 + args.margin, args.min_width / 2)
+        note = "D7 주행 범위 기반 근사 (중심선 = 주행선)"
+        spread = hi - lo
+    half = (wl + wr) / 2
+    out = os.path.join(ROOT, "data", "tracks", "ThunderhillWest_centerline.csv")
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    np.savetxt(out, np.c_[center, wr, wl], delimiter=",", fmt="%.4f",
+               header=f"x_m, y_m, w_tr_right_m, w_tr_left_m  ({note}, data/thunderhill_west.py)")
+    L = np.sum(np.linalg.norm(np.diff(np.r_[center, center[:1]], axis=0), axis=1))
+    print(f"[{args.source}] 한 바퀴 {L:.0f} m, 점 {len(center)}개, 레이싱 라인 좌우 범위 p5/50/95 {np.percentile(spread, [5, 50, 95]).round(1)} m, "
+          f"최종 폭 p5/50/95 {np.percentile(wl + wr, [5, 50, 95]).round(1)} m, 투영 점 {len(allp)}개 (파일 {len(files)}개)")
+    print("saved", os.path.relpath(out, ROOT))
+
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    plt.rcParams["font.family"] = "Malgun Gothic"; plt.rcParams["axes.unicode_minus"] = False
+    fig, ax = plt.subplots(figsize=(9, 9))
+    ax.plot(*allp[::20].T, ",", color="#999999", alpha=0.4, label="D7 주행 위치 (20개 파일)")
+    ax.plot(*(center + nrm * wl[:, None]).T, color="k", lw=1)
+    ax.plot(*(center - nrm * wr[:, None]).T, color="k", lw=1)
+    ax.plot(*center.T, color="#1f77b4", lw=1, ls="--", label="중심선")
+    ax.set_aspect("equal"); ax.legend(loc="best"); ax.set_title(f"Thunderhill West ({note}, 한 바퀴 {L:.0f} m)", fontsize=10)
+    fig.tight_layout(); fig.savefig(os.path.join(ROOT, "docs", "figures", "thunderhill_west.png"), dpi=120)
+
+
+if __name__ == "__main__":
+    main()
