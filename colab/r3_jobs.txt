@@ -1,0 +1,15 @@
+base;R3;0
+base;R3;1
+base;R3;2
+d1;R3;0
+d1;R3;1
+d1;R3;2
+pedal;R3;0
+pedal;R3;1
+pedal;R3;2
+road_none;R3;0
+road_none;R3;1
+road_none;R3;2
+road_bank;R3;0
+road_bank;R3;1
+road_bank;R3;2
