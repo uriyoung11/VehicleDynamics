@@ -6,3 +6,6 @@ repro/*/logs/
 checkpoints/
 logs/
 viz/out/
+
+# 팀원 공유 압축 파일 등 (로컬 보관)
+*.zip

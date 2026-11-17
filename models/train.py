@@ -19,11 +19,12 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def data_tag(name):
-    return name.split(":", 1)[1].rstrip("/").split("/")[-1] if name.startswith("d3:") else name
+    """체크포인트 폴더 이름. "d1+d7|veh" → "d1+d7_veh" (윈도우 경로에 | 불가)."""
+    return name.split(":", 1)[1].rstrip("/").split("/")[-1] if name.startswith("d3:") else name.replace("|", "_")
 
 
 def deriv_stats(X, Y, dt):
-    d = (Y - X[:, -1, :2]) / dt
+    d = (Y - X[:, -1, :Y.shape[1]]) / dt
     return d.mean(0), d.std(0)
 
 
@@ -55,6 +56,7 @@ def main(argv=None):
     ap.add_argument("--lam-r", type=float, default=1.0, help="m1: 잔차 크기(L2) 벌점 가중치. 0.01이면 D1 롤아웃이 발산했다(11/12)")
     ap.add_argument("--stage1-epochs", type=int, default=100, help="m1: 1단계(물리만) 최대 에폭")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--n-out", type=int, default=2, choices=[2, 3], help="출력: 2 [r, Uy] (Spielberg), 3 [r, Uy, Ux]. 3은 b1, m0, m1만")
     ap.add_argument("--threads", type=int, default=4)
     ap.add_argument("--out", default=None)
     args = ap.parse_args(argv)
@@ -62,12 +64,16 @@ def main(argv=None):
 
     tr, va = load(args.data, "train"), load(args.data, "val")
     dt = tr[0]["dt"]
-    Xtr, Ytr, _ = windows(tr, args.T); Xva, Yva, _ = windows(va, args.T)
+    if args.n_out == 3 and args.model in ("m2", "m3"):
+        raise SystemExit("--n-out 3은 b1, m0, m1만 지원한다")
+    Xtr, Ytr, _ = windows(tr, args.T, args.n_out); Xva, Yva, _ = windows(va, args.T, args.n_out)
     d_mean, d_std = deriv_stats(Xtr, Ytr, dt)
 
     flat = Xtr.reshape(len(Xtr), -1)
     stats = dict(T=args.T, dt=dt, x_mean=flat.mean(0).tolist(), x_std=(flat.std(0) + 1e-8).tolist(),
                  d_mean=d_mean.tolist(), d_std=d_std.tolist())
+    if args.n_out != 2:
+        stats["n_out"] = args.n_out
     if args.model == "m0":
         init, lr = stats, args.lr or 1e-3
     elif args.model in ("m1", "m2", "m3"):
@@ -83,6 +89,8 @@ def main(argv=None):
         if tr[0]["long_kind"] != "force_front":
             raise SystemExit("B1은 종방향 입력이 앞바퀴 힘인 데이터(D1, D3)만 지원한다. D2는 모터 전류라 모터 모델이 필요하다.")
         init = dict(vehicle=tr[0]["vehicle"], tire=args.tire, long_scale=tr[0]["long_scale"], dt=dt, T=args.T)
+        if args.n_out != 2:
+            init["n_out"] = args.n_out
         lr = args.lr or 1e-2
     model = build(args.model, **init).double()
 

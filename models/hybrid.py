@@ -121,13 +121,13 @@ class PhysCore(nn.Module):
     def mu(self):
         return self.mu_()
 
-    def deriv(self, last):
-        """last: (B, 5) 현재 시점. 반환 (B, 2) [r_dot, Uy_dot]."""
+    def deriv(self, last, n_out=2):
+        """last: (B, 5) 현재 시점. 반환 (B, n_out) [r_dot, Uy_dot(, Ux_dot)]."""
         r, uy, ux, delta = last[:, 0], last[:, 1], torch.clamp(last[:, 2], min=UX_MIN), last[:, 3]
         z = torch.zeros_like(r)
         xd = derivatives(torch.stack([z, z, z, ux, uy, r], -1), torch.stack([delta, self.total_fx(last[:, 4])], -1),
                          self.params(), self.mu(), P1_FIALA)
-        return torch.stack([xd[:, 5], xd[:, 4]], -1)
+        return torch.stack([xd[:, 5], xd[:, 4]] + ([xd[:, 3]] if n_out == 3 else []), -1)
 
     def fitted(self):
         with torch.no_grad():
@@ -160,12 +160,12 @@ class M1Residual(nn.Module):
     stages = (1, 2)
 
     def __init__(self, vehicle, long_kind="force_front", long_scale=1.0, motor_k0=1.0, T=4, dt=0.01,
-                 hidden=(128, 128), x_mean=None, x_std=None, d_mean=None, d_std=None, lam_r=1.0):
+                 hidden=(128, 128), x_mean=None, x_std=None, d_mean=None, d_std=None, lam_r=1.0, n_out=2):
         super().__init__()
-        self.T, self.dt, self.lam_r = T, dt, lam_r
+        self.T, self.dt, self.lam_r, self.n_out = T, dt, lam_r, n_out
         self.phys = PhysCore(vehicle, long_kind, long_scale, motor_k0)
         self.std = _Standardize(x_mean, x_std)
-        self.net = mlp(5 * T, hidden, 2, zero_last=True)
+        self.net = mlp(len(x_mean) if x_mean is not None else 5 * T, hidden, n_out, zero_last=True)
         self.register_buffer("d_std", _buf(d_std, [1.0]))
         self.stage = 2   # 학습이 끝난 모델은 2단계(잔차 켜짐)
 
@@ -181,10 +181,10 @@ class M1Residual(nn.Module):
 
     def forward(self, hist):
         last = hist[:, -1]
-        d = self.phys.deriv(last)
+        d = self.phys.deriv(last, self.n_out)
         if self.stage == 2:
             d = d + self.residual(hist)
-        return last[:, :2] + self.dt * d
+        return last[:, :self.n_out] + self.dt * d
 
     def physics_loss(self, X):
         if self.stage != 2 or self.lam_r <= 0:
@@ -226,7 +226,7 @@ class M2TireNN(nn.Module):
         self.std = _Standardize(x_mean, x_std)
         p = PRESETS[vehicle]
         self.tire_f, self.tire_r = _AxleTire(p.tire_f.c_alpha, T, hidden), _AxleTire(p.tire_r.c_alpha, T, hidden)
-        self.mu_net = mlp(5 * T, mu_hidden, 1, zero_last=True)
+        self.mu_net = mlp(len(x_mean) if x_mean is not None else 5 * T, mu_hidden, 1, zero_last=True)
         self.register_buffer("ux_scale", torch.tensor(float(ux_scale or p.ux_target_range[1]), dtype=torch.float64))
         lo, hi = GUARD["mu"]
         self.mu_lo, self.mu_hi = lo, hi

@@ -121,8 +121,107 @@ def load_d3(root, split, use_meas=True):
     return out
 
 
+# D7: Stanford 2025 VW Golf, Thunderhill West (Mori et al. 2025, purl.stanford.edu/hh613qz0317, CC BY-SA 4.0)
+D7_DIR = os.path.join(ROOT, "data", "d7")
+D7_DUP = {"2023-10_2", "2023-10_3"}            # 2023-10, 2023-10_1과 바이트 단위로 같은 파일(md5 확인)
+D7_SPLIT = {"val": ["2023-10_6", "2023-11_1", "2023-11_10"], "test": ["2023-10_4", "2023-11_3", "2023-11_8"]}
+D7_MIN_UX = 2.0                                # D1·풀스케일 프리셋의 ux_min_valid와 같음
+
+
+# D7 액추에이터 기반 종방향 힘 보정값 (data/d7 8개 파일, Ux > 5 m/s, 최소제곱, R² 0.937):
+#   가속도 ≈ K_DRIVE·(엔진 토크 × GearRatio) − K_BRAKE·(브레이크 힘 합) + ...  → 질량 ≈ 1/K_BRAKE ≈ 1630 kg
+D7_K_DRIVE, D7_K_BRAKE = 6.5826e-4, 6.1283e-4
+
+
+def load_d7(split, long="accel"):
+    """long: "accel" 측정 가속도로 만든 앞바퀴 힘(기본. [r, Uy]만 예측할 때),
+             "actuator" 엔진 토크·기어비·브레이크 힘으로 만든 앞바퀴 힘(미래 정보 없음. Ux까지 예측할 때),
+             "pedal" 스로틀/100(제동 중이면 −브레이크 압력/최대). Deep Dynamics·팀원 형식."""
+    return _load_d7(split, long)
+
+
+def _load_d7(split, long):
+    """200 Hz → 100 Hz(두 샘플 평균). Ux > 2 m/s인 연속 구간을 에피소드로.
+    종방향 입력은 D1의 fxf(앞바퀴 축 종방향 힘)와 같은 뜻으로 만든다:
+      전체 종방향 힘/m = dUx/dt − Uy·r (Ux를 0.09 s 평활 후 미분),
+      앞바퀴 몫 = 가속 1 (전륜구동), 제동 (앞 브레이크 힘)/(전체 브레이크 힘).
+    모델 입력은 long/long_scale(= m·100)이라 질량이 약분된다. Golf 질량을 몰라도 된다.
+    주의: D1의 fxf는 제어 명령/추정값, D7은 측정 가속도에서 계산한 값이라 성격이 조금 다르다.
+    차량 프리셋은 GTI(fullscale)를 쓴다(Golf 제원 미확인). 포화 라벨은 μ=1.0 가정."""
+    from scipy.ndimage import uniform_filter1d
+    m = PRESETS["fullscale"].m
+    out = []
+    for f in sorted(glob.glob(os.path.join(D7_DIR, "*.csv"))):
+        name = os.path.basename(f)[:-4]
+        if name in D7_DUP:
+            continue
+        s = next((k for k, runs in D7_SPLIT.items() if name in runs), "train")
+        if split not in ("all", s):
+            continue
+        d = pd.read_csv(f, comment="#")
+        cols = ["yawRate_radps", "Vy_mps", "Vx_mps", "roadWheelAngle_rad", "brake_fl_N", "brake_fr_N", "brake_rl_N", "brake_rr_N",
+                "engineTorque_Nm", "GearRatio", "throttleCmd_percent", "brake_fl_bar"]
+        a = d[cols].to_numpy(np.float64)
+        n2 = len(a) // 2 * 2
+        a = a[:n2].reshape(-1, 2, len(cols)).mean(1)               # 100 Hz
+        r, uy, ux, delta = a[:, 0], a[:, 1], a[:, 2], a[:, 3]
+        bf, bt = a[:, 4] + a[:, 5], a[:, 4:8].sum(1)
+        if long == "accel":
+            ax = np.gradient(uniform_filter1d(ux, 9), 0.01) - uy * r
+            share = np.where((ax < 0) & (bt > 1.0), bf / np.maximum(bt, 1e-9), 1.0)
+            fxf, ls, kind = share * m * ax, m * 100, "force_front"
+        elif long == "actuator":
+            # 앞바퀴 = 구동(전륜) − 앞 브레이크. 단위를 D1과 맞추려고 GTI 질량 기준 가속도로 환산
+            drive = D7_K_DRIVE / D7_K_BRAKE * a[:, 8] * a[:, 9]          # [N] (Golf 추정 질량 기준)
+            fxf, ls, kind = (drive - bf) * (m * D7_K_BRAKE), m * 100, "force_front"
+        else:
+            fxf = np.where(a[:, 11] > 0.5, -a[:, 11] / 50.0, a[:, 10] / 100.0)
+            ls, kind = 1.0, "pedal"
+        ok = ux > D7_MIN_UX
+        edges = np.flatnonzero(np.diff(np.r_[0, ok.astype(int), 0]))
+        for k, (i0, i1) in enumerate(zip(edges[::2], edges[1::2])):
+            if i1 - i0 < 100:
+                continue
+            F = np.stack([r, uy, ux, delta, fxf], 1)[i0:i1]
+            out.append(_episode(f"d7/{name}/seg{k}", "d7", s, 1.0, F, "fullscale", ls, kind))
+    return out
+
+
+def decimate(eps, k):
+    """시간 간격을 k배로: k 샘플 평균(포화 라벨은 최댓값). dt도 k배."""
+    out = []
+    for e in eps:
+        n = len(e["F"]) // k * k
+        if n < 2 * k:
+            continue
+        g = lambda a, f: f(np.asarray(a)[:n].reshape(n // k, k, *np.asarray(a).shape[1:]), axis=1)
+        out.append(dict(e, F=g(e["F"], np.mean), regime=g(e["regime"], np.max), regime_rear=g(e["regime_rear"], np.max),
+                        dt=e["dt"] * k))
+    return out
+
+
+VEH_ID = {"d1": 0.0, "d7": 1.0}
+
+
+def _with_vehicle_flag(eps):
+    """6번째 입력 채널로 차 구분 값(D1 GTI 0, D7 Golf 1)을 붙인다. 물리 부분은 0~4번 채널만 쓰므로 영향 없다."""
+    for e in eps:
+        e["F"] = np.c_[e["F"], np.full(len(e["F"]), VEH_ID[e["dataset"]])]
+    return eps
+
+
 def load(name, split, **kw):
-    """name: "d1", "d2", "d2-tire"(μ 일반화 분할), "d3:<생성 데이터 폴더>"."""
+    """name: "d1", "d2", "d2-tire"(μ 일반화 분할), "d3:<생성 데이터 폴더>", "d7".
+    여러 데이터 합치기: "d1+d7". 끝에 "|veh"를 붙이면 차 구분 채널을 추가한다 (예: "d1+d7|veh", 평가용 "d1|veh")."""
+    if "@" in name and not name.startswith("d3:"):          # "d1+d7@2": 시간 간격 2배(0.02 s)
+        base, k = name.rsplit("@", 1)
+        return decimate(load(base, split, **kw), int(k))
+    if name.endswith("|veh"):
+        return _with_vehicle_flag(load(name[:-4], split, **kw))
+    if "+" in name and not name.startswith("d3:"):
+        return [e for part in name.split("+") for e in load(part, split, **kw)]
+    if name in ("d7", "d7a", "d7p"):
+        return [dict(e, dataset="d7") for e in load_d7(split, {"d7": "accel", "d7a": "actuator", "d7p": "pedal"}[name])]
     if name == "d1":
         return load_d1(split)
     if name == "d2":
@@ -134,17 +233,17 @@ def load(name, split, **kw):
     raise ValueError(name)
 
 
-def windows(episodes, T=4):
-    """1스텝 학습용: 입력 (n, T, 5) [r, Uy, Ux, delta, long/long_scale], 타깃 (n, 2) 다음 시점 [r, Uy],
+def windows(episodes, T=4, n_out=2):
+    """1스텝 학습용: 입력 (n, T, 5) [r, Uy, Ux, delta, long/long_scale], 타깃 (n, n_out) 다음 시점 [r, Uy(, Ux)],
     그리고 타깃 시점의 포화 정도 (n,)."""
     Xs, Ys, Rs = [], [], []
     for ep in episodes:
-        F = ep["F"].copy(); F[:, 4] /= ep["long_scale"]
+        F = ep["F"].copy(); F[:, 4] /= ep["long_scale"]   # 5번째 이후 채널(차 구분 등)은 그대로
         n = len(F) - T
         if n <= 0:
             continue
         idx = np.arange(n)[:, None] + np.arange(T)[None, :]
-        Xs.append(F[idx]); Ys.append(F[T:, :2]); Rs.append(ep["regime"][T:])
+        Xs.append(F[idx]); Ys.append(F[T:, :n_out]); Rs.append(ep["regime"][T:])
     return np.concatenate(Xs), np.concatenate(Ys), np.concatenate(Rs)
 
 

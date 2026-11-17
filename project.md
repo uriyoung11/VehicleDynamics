@@ -1,6 +1,18 @@
 # 신경망 차량 모델로 한계 주행하기 — 프로젝트 개요 보고서
 
-KUBIG · Team 물리와 AI · 2026-11-05
+KUBIG · Team 물리와 AI · 2026-11-05 (11/17 현재 상태 반영)
+
+## 현재 상태 (11/17)
+
+이 문서는 11/5 계획이다. 그 뒤 바뀐 점은 아래와 같고, 자세한 내용은 각 문서에 있다.
+
+| 항목 | 11/5 계획 | 지금 |
+|---|---|---|
+| 학습 모델 | M0~M3, B1, B2(GP) | M0~M3, B1 구현 완료 ([docs/models_m1_m3.md](docs/models_m1_m3.md)). B2(GP)는 미구현. Deep Dynamics식 모델은 비교 후보로 검토 중 |
+| 실데이터 | D1, D2 주력, D4·D5 보조 | D1(GTI) + **D7(Stanford 2025 Golf, 같은 Thunderhill)** 을 풀스케일 한계 실데이터로, D2는 실제 μ 변화 검증용. D4는 쓰지 않음. D5(AV-21)는 한계 주행 데이터가 아님 ([docs/dataset_survey_2026-11-12.md](docs/dataset_survey_2026-11-12.md), [docs/deep_dynamics_analysis_2026-11-12.md](docs/deep_dynamics_analysis_2026-11-12.md)) |
+| 제어 (RQ5) | MPC 폐루프 경로 추종 | MPPI 구현. 방식 A(목표 속도 추종)와 B(진행 최대화) 비교 중. 정답 μ MPC도 실패할 만큼 MPPI가 불안정해 안정화가 먼저 ([docs/mpc_comparison_design_2026-11-16.md](docs/mpc_comparison_design_2026-11-16.md)) |
+| 진행 중 | | 여러 차 데이터 혼합 학습(GTI + Golf)과 모델 입출력 형식 비교 ([docs/mixing_io_format_2026-11-17.md](docs/mixing_io_format_2026-11-17.md)) |
+| 계산 자원 | GPU 예산 | 노트북 CPU로 학습. MPPI 대량 주행은 코랩 GPU 사용 예정 |
 
 ## 요약
 
@@ -97,14 +109,15 @@ F_y = -D \sin\left(C \arctan\left(B\alpha - E\left(B\alpha - \arctan(B\alpha)\ri
 
 ### 3. 데이터
 
-실데이터는 D1(원논문)과 D2(F1TENTH 한계 기동)를 주력으로 쓰고, D4·D5는 보조 평가로, D3(합성)는 μ 스윕과 정답 라벨 확보용으로 쓴다. D2에는 타이어 세트별 근사 μ가 있어 실데이터로도 노면 일반화를 검증할 수 있다.
+실데이터는 풀스케일 D1(GTI)·D7(Golf)과 소형 D2(RC카 한계 기동)를 주력으로 쓰고, D5는 Deep Dynamics 비교용 보조로, D3(합성)는 μ 스윕과 정답 라벨 확보용으로 쓴다. D2에는 타이어 세트별 근사 μ가 있어 실데이터로도 노면 일반화를 검증할 수 있다. (11/17 갱신: D7 추가, D4 제외)
 
 | 데이터 | 차량·규모 | 노면·μ | 분량·형식 | 한계 구간 | 라이선스 | 우리 용도 | 판정 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| D1 [Spielberg 2019 공개 자료](https://purl.stanford.edu/zb950hd3384) | 풀스케일 실험 차량 | 고마찰 노면 | 실험 데이터 + 차량 모델 데이터 생성 코드 + 학습 코드 (분량 확인 필요) | 한계 주행 실험 | CC BY-NC 3.0 | 재현, 실데이터 주평가 | 채택 |
+| D1 [Spielberg 2019 공개 자료](https://purl.stanford.edu/zb950hd3384) | 풀스케일 VW GTI (1776 kg, 장비 포함) | 마른 노면 μ 1.0 (얼음·눈 실험 폴더는 공개 자료에서 비어 있음) | 주행 11개, 약 20분, 100 Hz | 최대 1.28 g, 한계 근처 10% | CC BY-NC 3.0 | 재현, 실데이터 주평가 | 채택 |
+| D7 [Stanford 2025 (Mori et al.)](https://purl.stanford.edu/hh613qz0317) | 풀스케일 VW Golf (질량 추정 약 1630 kg) | 마른 노면, Thunderhill West | CSV 22개(중복 2개 제외 20개), 약 39분, 200 Hz | 1.1~1.17 g, 비선형·포화 31% (한계 직전, 넘어선 미끄러짐은 없음) | CC BY-SA 4.0 | 풀스케일 한계 실데이터 2, GTI와 혼합·차간 일반화 | 채택 (11/17 추가) |
 | D2 [Węgrzynowski et al. 2024](https://arxiv.org/pdf/2408.15610) | Xray GTXE'22, 4WD 1/8 RC카, 4.5 kg | 타이어 4세트: μ≈0.65, 0.58, 0.43, 0.45 (C·D는 테이프로 마찰 감소) | 52분, 100 Hz 재샘플, IMU·모터 전류·조향각, OptiTrack 기반 속도 정답 | 뒷축 슬립각 99분위 40° 초과 | [GitHub 저장소](https://github.com/SzalonyJohny/Learning-dynamics-models-for-velocity-estimation) 공개, 저장소 MIT (데이터 별도 라이선스 표기 없음) | 포화 구간 실평가, 실데이터 μ 일반화, probing | 채택 |
-| D4 [Revs Vehicle Dynamics Database](https://purl.stanford.edu/cv083fq4881) | 1963 Corvette Grand Sport, 1965 Ferrari 250 LM, 전문 드라이버 레이스 | 건조 트랙 | 세션별 CSV·MAT, 채널 설명(channels.txt), 차량 파라미터 CSV | 레이스 주행, D2 논문 기준 큰 슬립각 기동은 적음 | [ODC-By 1.0](https://purl.stanford.edu/yf219gg2055) | 다른 차량으로의 분포 이동 테스트 | 보조, 채널 확인 후 |
-| D5 [Deep Dynamics 저장소](https://github.imc.re/linklab-uva/deep-dynamics)의 IAC 데이터 | 풀스케일 AV-21 인디 레이스카 | 건조, LVMS·Putnam Park | CSV 5개, 학습용 변환 스크립트 포함 | 고속 레이스 | 저장소 확인 필요 | 고속 영역 보조 평가, Deep Dynamics(PCNN)와 비교 | 보조 |
+| D4 [Revs Vehicle Dynamics Database](https://purl.stanford.edu/cv083fq4881) | 1963 Corvette Grand Sport, 1965 Ferrari 250 LM, 전문 드라이버 레이스 | 건조 트랙 | 세션별 CSV·MAT, 채널 설명(channels.txt), 차량 파라미터 CSV | 레이스 주행, D2 논문 기준 큰 슬립각 기동은 적음 | [ODC-By 1.0](https://purl.stanford.edu/yf219gg2055) | 다른 차량으로의 분포 이동 테스트 | 쓰지 않음 (차간 일반화는 D1↔D7로 대체) |
+| D5 [Deep Dynamics 저장소](https://github.com/linklab-uva/deep-dynamics)의 IAC 데이터 | 풀스케일 AV-21 인디 레이스카 | 건조, LVMS·Putnam Park | CSV 5개, 25 Hz, 실제 주행 약 90분 | 한계 주행 아님 (서킷 최대 0.57 g, 오벌 1.1 g는 경사 덕분) | GPL-3.0 | Deep Dynamics와 비교, 팀원 IAC 실험 | 보조 |
 | D6 같은 저장소의 BayesRace 시뮬 데이터 | 시뮬레이터 차량 | 단일 | npz 2개, 정답 Pacejka 계수가 설정 파일에 기재 | pure pursuit 주행 | 저장소 확인 필요 | 정답 계수가 알려진 합성 벤치마크, D3 생성기 검증 | 보조 |
 | D3 자체 합성 | 직접 만든 P2·P3 시뮬레이터 | μ 0.2~1.0 스윕 | 생성량 조절 가능 | 의도적으로 포함 | 자체 | μ 일반화, 극한 상황, μ·타이어 힘 라벨 | 채택 |
 | [RACECAR](https://arxiv.org/abs/2306.03252v1) | AV-21, 27세션·6.5시간 이상 | 건조 | ROS2·nuScenes 다중 센서 | 고속 | 저장소 확인 필요 | 인지 중심이라 전처리 부담이 큼. 동역학용 일부는 D5로 대체 | 제외 |

@@ -17,13 +17,14 @@ from physics import PRESETS, ModelOptions, derivatives
 
 
 class M0MLP(nn.Module):
-    def __init__(self, T=4, hidden=(128, 128), dt=0.01, x_mean=None, x_std=None, d_mean=None, d_std=None):
+    def __init__(self, T=4, hidden=(128, 128), dt=0.01, x_mean=None, x_std=None, d_mean=None, d_std=None, n_out=2):
         super().__init__()
-        self.T, self.dt = T, dt
-        layers, n = [], 5 * T
+        self.T, self.dt, self.n_out = T, dt, n_out   # n_out 2: [r, Uy], 3: [r, Uy, Ux]
+        # 입력 채널 수는 표준화 통계 길이에서 정한다(기본 5채널, 차 구분 채널을 붙이면 6)
+        layers, n = [], (len(x_mean) if x_mean is not None else 5 * T)
         for h in hidden:
             layers += [nn.Linear(n, h), nn.Softplus()]; n = h
-        layers.append(nn.Linear(n, 2))
+        layers.append(nn.Linear(n, n_out))
         self.net = nn.Sequential(*layers)
         for m in self.net:
             if isinstance(m, nn.Linear):
@@ -35,13 +36,13 @@ class M0MLP(nn.Module):
     def forward(self, hist):
         x = (hist.reshape(len(hist), -1) - self.x_mean) / self.x_std
         deriv = self.net(x) * self.d_std + self.d_mean
-        return hist[:, -1, :2] + self.dt * deriv
+        return hist[:, -1, :self.n_out] + self.dt * deriv
 
 
 class B1Bike(nn.Module):
-    def __init__(self, vehicle="fullscale", tire="fiala", long_scale=1.0, dt=0.01, T=4):
+    def __init__(self, vehicle="fullscale", tire="fiala", long_scale=1.0, dt=0.01, T=4, n_out=2):
         super().__init__()
-        self.vehicle, self.tire, self.dt, self.T = vehicle, tire, dt, T
+        self.vehicle, self.tire, self.dt, self.T, self.n_out = vehicle, tire, dt, T, n_out
         self.register_buffer("long_scale", torch.tensor(float(long_scale), dtype=torch.float64))
         # 배율을 로그로 학습(항상 양수)
         self.log_cf = nn.Parameter(torch.zeros((), dtype=torch.float64))
@@ -71,7 +72,10 @@ class B1Bike(nn.Module):
         x = torch.stack([z, z, z, ux, uy, r], -1)
         u = torch.stack([delta, fx], -1)
         xd = derivatives(x, u, self.params(), self.mu(), self.opt)
-        return torch.stack([r + self.dt * xd[:, 5], uy + self.dt * xd[:, 4]], -1)
+        out = [r + self.dt * xd[:, 5], uy + self.dt * xd[:, 4]]
+        if self.n_out == 3:
+            out.append(ux + self.dt * xd[:, 3])
+        return torch.stack(out, -1)
 
 
 def build(kind, **kw):
