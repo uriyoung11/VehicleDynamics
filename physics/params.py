@@ -86,26 +86,31 @@ F1TENTH = VehicleParams(
     noise_std=dict(ux=0.02, uy=0.02, r=0.02, ax=0.3, ay=0.3),
 )
 
-# 풀스케일 Golf: D7(Stanford 2025, Thunderhill West)으로 추정한 값 (physics/golf_sysid.py, physics/golf_fit.json).
+# 풀스케일 Golf (D7 데이터상 이름 "VW Golf", 엔진·LSD·구동 단서로 GTI로 추정): D7(Stanford 2025, Thunderhill West)으로 추정
+# (physics/golf_sysid.py --fix a=1.05 --slope, physics/golf_fit_slope.json).
 # 공개 제원이 없어 고정한 값: 질량 1630 kg(브레이크 힘-감속도 관계로 추정), 축거 2.63 m(제조사),
-#   a = 1.05 m(제조사 앞 무게 약 60%. 자유 추정 a 1.29 m와 검증 손실 차이 2%라 물리적으로 그럴듯한 쪽을 택함),
-#   전륜구동, 앞 제동 배분 0.75(D7 측정).
-# 데이터로 맞춘 값: Iz, 정규화 코너링 강성·Pacejka 형상(앞뒤), h, 주행 저항. 0.5 s 롤아웃 손실, 시험 주행 2 s 롤아웃
-#   오차 r 0.052 rad/s, Uy 0.42 m/s (GTI 제원 그대로면 0.219, 3.40).
-# 이 프리셋과 함께 쓸 노면 μ는 1.09(D7 마른 노면 추정). D7의 Vy는 무게중심보다 약 0.29 m 앞에서 잰 값이다
-#   (Vy_측정 = Vy_무게중심 + 0.29·r). Iz가 크게 나온 것은 타이어 반응 지연 등 모델에 없는 효과를 흡수했을 수 있다.
+#   a = 1.05 m(제조사 앞 무게 약 60%. 데이터로는 정해지지 않음), 전륜구동, 앞 제동 배분 0.75(D7 측정).
+# 데이터로 맞춘 값: Iz, 정규화 코너링 강성·Pacejka 형상(앞뒤), μ, h, 주행 저항. 0.5 s 롤아웃 손실.
+# 노면 경사를 넣고 맞췄다(트랙 파일 data/tracks/ThunderhillWest_centerline.csv의 grade_rad 열, rk4_step(..., slope=)).
+#   D7 시험 주행 2 s 롤아웃 오차: r 0.051 rad/s, Uy 0.41 m/s, Ux 0.70 m/s (평지로 맞춘 값 0.052, 0.42, 0.82;
+#   GTI 제원 그대로 0.219, 3.34, 2.63). 0.8 g 이상 구간에서도 r 0.060, Uy 0.49.
+# 이 프리셋과 함께 쓸 노면 μ는 1.085. D7의 Vy는 무게중심보다 약 0.27 m 앞에서 잰 값이다(Vy_측정 = Vy_무게중심 + 0.27·r).
+# 좌우 기울기: 맞춘 이득이 −0.23(측정 기울기의 1/4, 반대 부호)이라 효과가 작고 믿기 어렵다. 기본은 경사만 쓴다.
+#   기울기도 넣으려면 slope = [grade, GOLF_BANK_GAIN·bank].
+# Iz가 크게 나온 것은 타이어 반응 지연 등 모델에 없는 효과를 흡수했을 수 있다. c2도 일반 Golf(약 0.4)보다 크다.
 _mg = 1630.0
 GOLF = VehicleParams(
     name="golf_d7",
-    m=_mg, Iz=3630.5, a=1.05, b=1.58, h=0.32,
-    tire_f=TireParams(c_alpha=11.765, C=1.299), tire_r=TireParams(c_alpha=16.518, C=1.831),
+    m=_mg, Iz=3630.2, a=1.05, b=1.58, h=0.319,
+    tire_f=TireParams(c_alpha=11.815, C=1.301), tire_r=TireParams(c_alpha=16.631, C=1.815),
     delta_max=0.61, delta_rate_max=1.0,          # D7 최대 조향 0.61 rad. 조향 속도는 99.9분위 0.63 rad/s라 여유 있게 1.0
     drive_front=1.0, brake_front=0.75, power_max=150e3,   # D7 바퀴 구동 출력 99.9분위 148 kW
-    c0=36.7, c1=0.0, c2=1.192,
+    c0=24.9, c1=0.0, c2=1.258,
     ux_min_valid=2.0, ux_target_range=(5.0, 40.0),
     noise_std=dict(ux=0.05, uy=0.02, r=0.005, ax=0.1, ay=0.1),
 )
-GOLF_MU = 1.09
-GOLF_VY_SENSOR_OFFSET = 0.29   # [m]
+GOLF_MU = 1.085
+GOLF_VY_SENSOR_OFFSET = 0.27   # [m]
+GOLF_BANK_GAIN = -0.233        # 좌우 기울기 이득 (믿기 어려움, 기본은 쓰지 않음)
 
 PRESETS = {"fullscale": FULLSCALE, "f1tenth": F1TENTH, "golf": GOLF}

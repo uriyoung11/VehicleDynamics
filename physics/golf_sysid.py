@@ -40,11 +40,24 @@ SPEC = {
     "c0": (150.0, 0.0, 800.0),        # 구름 저항 [N]
     "c2": (0.4, 0.0, 1.5),            # 공기 저항 계수 [N/(m/s)²]
     "ds": (0.0, -1.5, 1.5),           # 횡속도 센서 위치 보정 [m]
+    "kb": (0.0, -1.5, 1.5),           # 좌우 기울기 이득: dUy/dt += g sin(kb·기울기). D7 롤 부호 규약을 몰라 부호·크기를 같이 맞춘다 (--slope일 때만)
 }
+TRACK = os.path.join(ROOT, "data", "tracks", "ThunderhillWest_centerline.csv")
 
 
-def load_runs(split):
-    """D7 → 연속 구간 리스트. 각 구간 (N, 6) [r, Uy_meas, Ux, delta, Fx_total, Ux>5 마스크는 이미 적용]."""
+def slope_lookup():
+    """트랙 파일(data.thunderhill_west)의 위치별 [경사, 좌우 기울기]. 위치 [동, 북] → 가장 가까운 트랙 점의 값."""
+    from scipy.spatial import cKDTree
+    T = np.loadtxt(TRACK, delimiter=",", comments="#")
+    assert T.shape[1] >= 7, "트랙 파일에 경사·기울기 열이 없다. python -m data.thunderhill_west 를 먼저 실행"
+    tree = cKDTree(T[:, :2])
+    return lambda en: T[tree.query(en)[1]][:, 5:7]
+
+
+def load_runs(split, slope=False):
+    """D7 → 연속 구간 리스트. 각 구간 (N, 7) [r, Uy_meas, Ux, delta, Fx_total, 경사, 좌우 기울기] (Ux > 5 m/s).
+    slope=False면 경사·기울기 열은 0."""
+    look = slope_lookup() if slope else None
     from data.datasets import D7_DIR, D7_DUP, D7_SPLIT, D7_K_DRIVE, D7_K_BRAKE
     segs = []
     for f in sorted(glob.glob(os.path.join(D7_DIR, "*.csv"))):
@@ -56,12 +69,13 @@ def load_runs(split):
             continue
         d = pd.read_csv(f, comment="#")
         cols = ["yawRate_radps", "Vy_mps", "Vx_mps", "roadWheelAngle_rad", "engineTorque_Nm", "GearRatio",
-                "brake_fl_N", "brake_fr_N", "brake_rl_N", "brake_rr_N"]
+                "brake_fl_N", "brake_fr_N", "brake_rl_N", "brake_rr_N", "posE_m", "posN_m"]
         a = d[cols].to_numpy(np.float64)
         n2 = len(a) // 2 * 2
         a = a[:n2].reshape(-1, 2, len(cols)).mean(1)                 # 100 Hz
         fx = D7_K_DRIVE / D7_K_BRAKE * a[:, 4] * a[:, 5] - a[:, 6:10].sum(1)
-        F = np.c_[a[:, 0], a[:, 1], a[:, 2], a[:, 3], fx]
+        sl = look(a[:, 10:12]) if look else np.zeros((len(a), 2))
+        F = np.c_[a[:, 0], a[:, 1], a[:, 2], a[:, 3], fx, sl]
         ok = a[:, 2] > 5.0
         edges = np.flatnonzero(np.diff(np.r_[0, ok.astype(int), 0]))
         for i0, i1 in zip(edges[::2], edges[1::2]):
@@ -75,7 +89,7 @@ def windows(segs, H, stride):
     for F in segs:
         for s in range(0, len(F) - H - 1, stride):
             W.append(F[s:s + H + 1])
-    return torch.as_tensor(np.stack(W), dtype=torch.float64)        # (B, H+1, 5)
+    return torch.as_tensor(np.stack(W), dtype=torch.float64)        # (B, H+1, 7)
 
 
 class GolfParams(torch.nn.Module):
@@ -106,7 +120,8 @@ def simulate(P, W, H):
     out = []
     for k in range(H):
         u = W[:, k, 3:5]
-        x = rk4_step(x, u, p, v["mu"], DT, OPT)
+        slope = torch.stack([W[:, k, 5], v["kb"] * W[:, k, 6]], -1)   # 기록된 경로 위치의 노면 (0.5 s 동안 경로가 크게 안 벗어난다고 봄)
+        x = rk4_step(x, u, p, v["mu"], DT, OPT, slope=slope)
         out.append(torch.stack([x[:, 5], x[:, 4] + v["ds"] * x[:, 5], x[:, 3]], -1))
     return torch.stack(out, 1)
 
@@ -120,8 +135,10 @@ def errors(P, segs, horizons=(50, 100, 200), stride=50):
             pr = simulate(P, W, H) if P is not None else W[:, :1, :3].expand(-1, H, -1)   # None = 현재값 유지
             e = pr[:, -1] - W[:, H, :3]
             ok = torch.isfinite(e).all(1)
+            hi = ((W[:, :, 2] * W[:, :, 0]).abs().amax(1) / 9.81 > 0.8) & ok    # 한계 근처(0.8 g 이상) 창
             res[f"{H * DT:.1f}s"] = dict(zip(["r", "uy", "ux"], torch.sqrt((e[ok] ** 2).mean(0)).tolist()),
-                                         diverged=int((~ok).sum()))
+                                         diverged=int((~ok).sum()),
+                                         hi=dict(zip(["r", "uy", "ux"], torch.sqrt((e[hi] ** 2).mean(0)).tolist()), n=int(hi.sum())))
     return res
 
 
@@ -135,12 +152,15 @@ def main(argv=None):
     ap.add_argument("--eval-only", action="store_true")
     ap.add_argument("--fix", nargs="*", default=[], help="고정할 값, 예: a=1.05 (제조사 무게 배분)")
     ap.add_argument("--out", default=OUT)
+    ap.add_argument("--slope", action="store_true", help="트랙 경사·좌우 기울기의 중력 성분을 넣는다 (kb도 맞춘다)")
     ap.add_argument("--w-limit", type=float, default=0.0, help="구간 안 최대 횡가속도가 0.7 g 이상인 창의 추가 가중치(한계 근처를 더 맞추기)")
     args = ap.parse_args(argv)
     torch.set_num_threads(args.threads); torch.manual_seed(0)
     fixed = {k: float(v) for k, v in (s.split("=") for s in args.fix)}
 
-    tr, va, te = load_runs("train"), load_runs("val"), load_runs("test")
+    tr, va, te = (load_runs(s, args.slope) for s in ("train", "val", "test"))
+    if not args.slope:
+        fixed.setdefault("kb", 0.0)
     print(f"구간: 학습 {len(tr)}개 {sum(map(len, tr)) / 6000:.1f}분, 검증 {len(va)}개, 시험 {len(te)}개 {sum(map(len, te)) / 6000:.1f}분", flush=True)
 
     if args.eval_only:
@@ -187,6 +207,7 @@ def main(argv=None):
     for name, model in (("Golf 추정", P), ("GTI 제원 그대로", gti), ("현재값 유지", None)):
         res = errors(model, te)
         print(f"{name:14s} " + "  ".join(f"{h}: r {v['r']:.3f} Uy {v['uy']:.3f} Ux {v['ux']:.3f}" for h, v in res.items()))
+        print(f"{'  └ 0.8 g 이상':14s} " + "  ".join(f"{h}: r {v['hi']['r']:.3f} Uy {v['hi']['uy']:.3f} (창 {v['hi']['n']}개)" for h, v in res.items()))
     print("\n추정값:", {k: round(float(t), 3) for k, t in P.values().items()}, f"(b = {L_GOLF - float(P.values()['a']):.3f} m)")
 
 

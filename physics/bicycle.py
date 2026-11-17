@@ -74,7 +74,9 @@ def forces(x, u, p, mu, opt=P2):
     return dict(fxf=fxf, fxr=fxr, fyf=fyf, fyr=fyr, fzf=fzf, fzr=fzr, alpha_f=alpha_f, alpha_r=alpha_r)
 
 
-def derivatives(x, u, p, mu, opt=P2, return_forces=False):
+def derivatives(x, u, p, mu, opt=P2, return_forces=False, slope=None):
+    """slope: (..., 2) [경사 rad (오르막 +), 좌우 기울기 rad (차 왼쪽(+y)으로 중력이 끄는 방향 +)] 또는 None(평지).
+    중력 성분만 더한다: dUx/dt −= g sin(경사), dUy/dt += g sin(기울기). 수직 하중 변화(cos 항)는 4°에서 0.3%라 무시."""
     psi, ux, uy, r = x[..., 2], x[..., 3], x[..., 4], x[..., 5]
     delta = u[..., 0]
     f = forces(x, u, p, mu, opt)
@@ -84,6 +86,9 @@ def derivatives(x, u, p, mu, opt=P2, return_forces=False):
     ux_dot = (f["fxf"] * cd - f["fyf"] * sd + f["fxr"] - f_res) / p.m + r * uy
     uy_dot = (f["fyf"] * cd + f["fxf"] * sd + f["fyr"]) / p.m - r * ux
     r_dot = (p.a * (f["fyf"] * cd + f["fxf"] * sd) - p.b * f["fyr"]) / p.Iz
+    if slope is not None:
+        ux_dot = ux_dot - p.g * torch.sin(slope[..., 0])
+        uy_dot = uy_dot + p.g * torch.sin(slope[..., 1])
     X_dot = ux * torch.cos(psi) - uy * torch.sin(psi)
     Y_dot = ux * torch.sin(psi) + uy * torch.cos(psi)
 
@@ -95,12 +100,12 @@ def derivatives(x, u, p, mu, opt=P2, return_forces=False):
     return xd
 
 
-def rk4_step(x, u, p, mu, dt, opt=P2):
-    """입력을 dt 동안 고정(ZOH)하고 RK4 한 스텝."""
-    k1 = derivatives(x, u, p, mu, opt)
-    k2 = derivatives(x + 0.5 * dt * k1, u, p, mu, opt)
-    k3 = derivatives(x + 0.5 * dt * k2, u, p, mu, opt)
-    k4 = derivatives(x + dt * k3, u, p, mu, opt)
+def rk4_step(x, u, p, mu, dt, opt=P2, slope=None):
+    """입력(과 노면 경사·기울기)을 dt 동안 고정(ZOH)하고 RK4 한 스텝."""
+    k1 = derivatives(x, u, p, mu, opt, slope=slope)
+    k2 = derivatives(x + 0.5 * dt * k1, u, p, mu, opt, slope=slope)
+    k3 = derivatives(x + 0.5 * dt * k2, u, p, mu, opt, slope=slope)
+    k4 = derivatives(x + dt * k3, u, p, mu, opt, slope=slope)
     return x + dt / 6.0 * (k1 + 2 * k2 + 2 * k3 + k4)
 
 

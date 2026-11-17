@@ -24,13 +24,57 @@ from scipy.spatial import cKDTree
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-def positions(f):
-    d = pd.read_csv(f, comment="#", usecols=["posE_m", "posN_m", "Vx_mps"])
+def positions(f, extra=False):
+    """Ux > 5 m/s 위치 [동, 북]. extra=True면 [동, 북, 고도, 롤, 횡가속도 Ux·r]."""
+    cols = ["posE_m", "posN_m", "Vx_mps"] + (["posU_m", "rollAngle_rad", "yawRate_radps"] if extra else [])
+    d = pd.read_csv(f, comment="#", usecols=cols)
     d = d[d.Vx_mps > 5]
-    return d[["posE_m", "posN_m"]].to_numpy()
+    if not extra:
+        return d[["posE_m", "posN_m"]].to_numpy()
+    return np.c_[d.posE_m, d.posN_m, d.posU_m, d.rollAngle_rad, d.Vx_mps * d.yawRate_radps]
 
 
-def find_lap(xy, min_len=1000.0, close=5.0):
+def smooth_onto_line(ref, pts, sigma):
+    """꺾인 지도 중앙선 다듬기: 모양은 부드러운 레이싱 라인(ref)에서, 위치는 지도 선(pts, ref와 같은 순서)에서.
+    ref에서 지도 선까지 좌우 거리를 sigma[m]로 평활해 ref에 더한다. 짧게 튀는 꺾임은 평활에서 사라진다."""
+    t = np.gradient(ref, axis=0); t /= np.linalg.norm(t, axis=1, keepdims=True)
+    n = np.stack([-t[:, 1], t[:, 0]], 1)
+    e = np.sum((pts - ref) * n, 1)
+    return resample_closed(ref + n * gaussian_filter1d(e, sigma, mode="wrap")[:, None], 1.0, sigma=1.0)
+
+
+def heading_jump(c):
+    """중앙선 꺾임 정도: 1 m마다 방향 변화의 최댓값 [도]."""
+    t = np.diff(np.r_[c, c[:1]], axis=0)
+    h = np.unwrap(np.arctan2(t[:, 1], t[:, 0]))
+    return float(np.degrees(np.abs(np.diff(h)).max()))
+
+
+def surface_profile(center, samples, ds=1.0, iters=8):
+    """트랙 위치별 고도, 경사, 좌우 기울기.
+    고도: 위치별 고도 중앙값(여러 바퀴). 경사: 고도를 트랙 거리로 미분(차체 피치를 쓰지 않아 가감속 영향이 없다).
+    좌우 기울기: 롤 = 노면 기울기(위치마다) + k·횡가속도 로 보고 번갈아 푼다. 같은 위치를 다른 속도로 지난
+    여러 바퀴의 차이로 k(차체가 횡가속도에 따라 기우는 정도)를 구한다."""
+    j = cKDTree(center).query(samples[:, :2])[1]
+    n = len(center)
+    idx = np.arange(n)
+
+    def per_point(v):   # 위치별 중앙값, 빈 곳은 보간 후 5 m 평활
+        m = pd.Series(v).groupby(j).median().reindex(idx).to_numpy()
+        ok = np.isfinite(m)
+        return gaussian_filter1d(np.interp(idx, idx[ok], m[ok]), 5, mode="wrap")
+
+    z = per_point(samples[:, 2])
+    grade = np.gradient(np.r_[z[-2:], z, z[:2]], ds)[2:-2]          # 오르막 +
+    roll, ay = samples[:, 3], samples[:, 4]
+    bank, k = np.zeros(n), 0.0
+    for _ in range(iters):
+        k = float(np.linalg.lstsq(ay[:, None], roll - bank[j], rcond=None)[0][0])
+        bank = per_point(roll - k * ay)
+    return z, grade, bank, k
+
+
+def find_lap(xy, min_len=1000.0, close=1.0):   # 이음매 허용 1 m (5 m면 시작·끝이 1.4 m 어긋난 채 이어져 꺾였다)
     s = np.r_[0, np.cumsum(np.linalg.norm(np.diff(xy, axis=0), axis=1))]
     for i0 in range(0, len(xy) // 3, 200):
         far = np.flatnonzero(s - s[i0] > min_len)
@@ -81,8 +125,9 @@ def to_local(lat, lon):
     return X @ R.T
 
 
-def osm_centerline(ref, max_dist=8.0):
-    """D7 한 바퀴(ref)를 따라가며 가장 가까운 OSM 노면 중앙선 점을 모은다(D7이 달린 경로 부분만)."""
+def osm_centerline(ref, max_dist=8.0, raw=False):
+    """D7 한 바퀴(ref)를 따라가며 가장 가까운 OSM 노면 중앙선 점을 모은다(D7이 달린 경로 부분만).
+    raw=True면 ref와 같은 순서의 지도 점(다듬기 전)도 함께 돌려준다."""
     d = fetch_osm()
     dense = []
     for e in d["elements"]:
@@ -95,7 +140,8 @@ def osm_centerline(ref, max_dist=8.0):
     dense = np.vstack(dense)
     dist, k = cKDTree(dense).query(ref)
     assert dist.max() < max_dist, f"OSM 선이 D7 경로에서 {dist.max():.1f} m 떨어진 곳이 있다"
-    return resample_closed(dense[k], 1.0, sigma=3.0)
+    c = resample_closed(dense[k], 1.0, sigma=3.0)
+    return (c, dense[k]) if raw else c
 
 
 def main(argv=None):
@@ -106,10 +152,13 @@ def main(argv=None):
     ap.add_argument("--min-width", type=float, default=8.8, help="최소 트랙 폭 [m] (Stanford 공개 Thunderhill 본 코스 경계 폭 중앙값 8.8 m)")
     ap.add_argument("--car-half", type=float, default=0.9, help="osm: 차 반폭 [m]. 레이싱 라인(차 중심) 바깥으로 이만큼 노면이 있어야 한다")
     ap.add_argument("--window", type=int, default=15, help="osm: 폭을 볼 앞뒤 범위 [m]")
+    ap.add_argument("--smooth", type=float, default=10.0, help="osm: 지도 중앙선 꺾임 다듬기 평활 폭 [m]. 0이면 다듬지 않음")
     args = ap.parse_args(argv)
     files = [f for f in sorted(glob.glob(os.path.join(ROOT, "data", "d7", "*.csv")))
              if os.path.basename(f)[:-4] not in ("2023-10_2", "2023-10_3")]
-    P = [positions(f) for f in files]
+    P = [positions(f, extra=True) for f in files]
+    samples = np.vstack(P)                                         # [동, 북, 고도, 롤, 횡가속도]
+    P = [p[:, :2] for p in P]
     lap = next((l for l in (find_lap(p) for p in P) if l is not None), None)
     assert lap is not None, "닫힌 한 바퀴를 찾지 못함"
     ref = resample_closed(lap)
@@ -117,7 +166,12 @@ def main(argv=None):
     nrm = np.stack([-t[:, 1], t[:, 0]], 1)                       # 진행 방향 왼쪽
     allp = np.vstack(P)
     if args.source == "osm":
-        center = osm_centerline(ref)
+        center, raw_pts = osm_centerline(ref, raw=True)
+        jump0 = heading_jump(center)
+        if args.smooth > 0:
+            center = smooth_onto_line(ref, raw_pts, args.smooth)
+        print(f"중앙선 꺾임(1 m당 최대 방향 변화): 지도 그대로 {jump0:.2f}° → 다듬은 뒤 {heading_jump(center):.2f}° "
+              f"(레이싱 라인 {heading_jump(ref):.2f}°)", flush=True)
         t = np.gradient(center, axis=0); t /= np.linalg.norm(t, axis=1, keepdims=True)
         nrm = np.stack([-t[:, 1], t[:, 0]], 1)
         j = cKDTree(center).query(allp)[1]
@@ -152,10 +206,15 @@ def main(argv=None):
         note = "D7 주행 범위 기반 근사 (중심선 = 주행선)"
         spread = hi - lo
     half = (wl + wr) / 2
+    z, grade, bank, k_roll = surface_profile(center, samples)
+    print(f"노면: 고도 범위 {z.max() - z.min():.1f} m, 경사 1~99분위 {np.degrees(np.percentile(grade, [1, 99])).round(1)}°, "
+          f"좌우 기울기 1~99분위 {np.degrees(np.percentile(bank, [1, 99])).round(1)}°, "
+          f"차체 롤 계수 {np.degrees(k_roll):.3f}°/(m/s²)", flush=True)
     out = os.path.join(ROOT, "data", "tracks", "ThunderhillWest_centerline.csv")
     os.makedirs(os.path.dirname(out), exist_ok=True)
-    np.savetxt(out, np.c_[center, wr, wl], delimiter=",", fmt="%.4f",
-               header=f"x_m, y_m, w_tr_right_m, w_tr_left_m  ({note}, data/thunderhill_west.py)")
+    # 앞 4열은 f1tenth_racetracks 형식(load_track이 읽음). 뒤 3열: 고도 [m], 경사 [rad, 오르막 +], 좌우 기울기 [rad, D7 롤과 같은 부호]
+    np.savetxt(out, np.c_[center, wr, wl, z, np.arctan(grade), bank], delimiter=",", fmt="%.5f",
+               header=f"x_m, y_m, w_tr_right_m, w_tr_left_m, z_m, grade_rad, bank_rad  ({note}, data/thunderhill_west.py)")
     L = np.sum(np.linalg.norm(np.diff(np.r_[center, center[:1]], axis=0), axis=1))
     print(f"[{args.source}] 한 바퀴 {L:.0f} m, 점 {len(center)}개, 레이싱 라인 좌우 범위 p5/50/95 {np.percentile(spread, [5, 50, 95]).round(1)} m, "
           f"최종 폭 p5/50/95 {np.percentile(wl + wr, [5, 50, 95]).round(1)} m, 투영 점 {len(allp)}개 (파일 {len(files)}개)")
@@ -172,6 +231,17 @@ def main(argv=None):
     ax.plot(*center.T, color="#1f77b4", lw=1, ls="--", label="중심선")
     ax.set_aspect("equal"); ax.legend(loc="best"); ax.set_title(f"Thunderhill West ({note}, 한 바퀴 {L:.0f} m)", fontsize=10)
     fig.tight_layout(); fig.savefig(os.path.join(ROOT, "docs", "figures", "thunderhill_west.png"), dpi=120)
+
+    s_ = np.arange(len(center)) * 1.0
+    fig, axs = plt.subplots(3, 1, figsize=(11, 7), sharex=True)
+    axs[0].plot(s_, z - z.min(), color="#1f77b4"); axs[0].set_ylabel("고도 [m]")
+    axs[1].plot(s_, np.degrees(np.arctan(grade)), color="#d62728"); axs[1].set_ylabel("경사 [°] (오르막 +)")
+    axs[2].plot(s_, np.degrees(bank), color="#2ca02c"); axs[2].set_ylabel("좌우 기울기 [°]")
+    for a in axs:
+        a.grid(alpha=0.3); a.axhline(0, color="k", lw=0.5)
+    axs[2].set_xlabel("트랙 거리 [m]")
+    axs[0].set_title("Thunderhill West 노면 (D7 20개 파일, 위치별 중앙값)")
+    fig.tight_layout(); fig.savefig(os.path.join(ROOT, "docs", "figures", "thunderhill_west_profile.png"), dpi=120)
 
 
 if __name__ == "__main__":
