@@ -1,0 +1,19 @@
+{
+ "status": "finished",
+ "finished": true,
+ "progress_m": 2620.0,
+ "progress_frac": 0.9996184662342618,
+ "time_s": 106.44,
+ "lap_time": 106.44,
+ "ey_mean": 0.3727346333281873,
+ "ey_max": 2.036771535873413,
+ "v_err_mean": 0.5563336103225014,
+ "v_mean": 24.7125976351767,
+ "wall_s": 683.3974168300629,
+ "K": 1024,
+ "N": 25,
+ "seed": 0,
+ "exp": "base",
+ "rung": "R5",
+ "model_seed": 0
+}

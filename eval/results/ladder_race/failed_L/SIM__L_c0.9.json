@@ -1,0 +1,22 @@
+{
+ "status": "spin",
+ "finished": false,
+ "progress_m": 279.0,
+ "progress_frac": 0.10644792064097673,
+ "time_s": 8.88,
+ "lap_time": null,
+ "ey_mean": 1.2679938876850378,
+ "ey_max": 7.911974906921387,
+ "v_err_mean": 4.620214539605218,
+ "v_mean": 31.527325389621495,
+ "v_max": 36.90876007080078,
+ "wall_s": 355.708535194397,
+ "K": 1024,
+ "N": 25,
+ "seed": 0,
+ "mode": "L",
+ "exp": "base",
+ "rung": "SIM",
+ "model_seed": 0,
+ "cap": 0.9
+}

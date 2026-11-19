@@ -1,0 +1,23 @@
+{
+ "status": "off_track",
+ "finished": false,
+ "progress_m": 489.0,
+ "progress_frac": 0.18657001144601298,
+ "time_s": 18.6,
+ "lap_time": null,
+ "ey_mean": 1.27791822966769,
+ "ey_max": 8.260868072509766,
+ "v_err_mean": 0.3096440674156271,
+ "v_mean": 26.763129855740456,
+ "v_max": 33.341094970703125,
+ "wall_s": 353.26709246635437,
+ "K": 1024,
+ "N": 25,
+ "seed": 0,
+ "mode": "A",
+ "exp": "base",
+ "rung": "R6",
+ "model_seed": 0,
+ "cap": null,
+ "scale": 1.06
+}

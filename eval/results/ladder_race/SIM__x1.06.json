@@ -1,0 +1,23 @@
+{
+ "status": "finished",
+ "finished": true,
+ "progress_m": 2619.0,
+ "progress_frac": 0.9992369324685234,
+ "time_s": 100.36,
+ "lap_time": 100.36,
+ "ey_mean": 0.9448638258827795,
+ "ey_max": 4.492449760437012,
+ "v_err_mean": 0.5585217394169321,
+ "v_mean": 26.368384193642388,
+ "v_max": 35.55207824707031,
+ "wall_s": 5103.513966083527,
+ "K": 1024,
+ "N": 25,
+ "seed": 0,
+ "mode": "A",
+ "exp": "base",
+ "rung": "SIM",
+ "model_seed": 0,
+ "cap": null,
+ "scale": 1.06
+}
