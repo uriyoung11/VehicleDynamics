@@ -14,33 +14,41 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
 sys.path[:0] = [HERE, ROOT]
 import ladder                                             # noqa: E402
-from run_ablation import CKPT, RUNGS, cfg_of, metrics     # noqa: E402
+from run_ablation import CKPT, RUNGS, cfg_of, legacy, lon_of, metrics     # noqa: E402
 from train import windows                                 # noqa: E402
 from data.ladder_data import d7_segments, d1_segments     # noqa: E402
 
 
 def main():
     torch.set_num_threads(8)
-    tests = {}
-    for name, segs in (("D7", d7_segments("test", "force", "bank+grade")), ("D1", d1_segments("test", "bank+grade"))):
-        X, Y, U = windows(segs, 8, horizon=25, stride=5)
-        Xt, Yt, Ut = (torch.tensor(z) for z in (X, Y, U))
-        tests[name] = (Xt, Yt, Ut, Yt.reshape(-1, 3).std(0))
-        print(name, "시험 창", len(Xt))
-    out = {f"_hold/{t}": metrics(None, *v) for t, v in tests.items()}
+    def tests_for(old):
+        """시험 데이터: 11/19 이전 체크포인트(old)는 이전 힘 정의·m 1630 환산, 새 체크포인트는 팀 기준."""
+        if old not in cache:
+            T = {}
+            for name, segs in (("D7", d7_segments("test", "force_old" if old else "force", "bank+grade")),
+                               ("D1", d1_segments("test", "bank+grade", m_golf=1630.0 if old else 1496.9))):
+                X, Y, U = windows(segs, 8, horizon=25, stride=5)
+                Xt, Yt, Ut = (torch.tensor(z) for z in (X, Y, U))
+                T[name] = (Xt, Yt, Ut, Yt.reshape(-1, 3).std(0))
+            cache[old] = T
+        return cache[old]
+
+    cache, out = {}, {}
     for exp in ("base", "d1"):
         for p in sorted(glob.glob(os.path.join(CKPT, exp, "*.pt"))):
             s = json.load(open(p[:-3] + ".json"))["spec"]
             cfg = cfg_of(s)
             rung, seed = os.path.basename(p)[:-3].split("_s")
             model = ladder.load_model(p, cfg)
+            tests = tests_for(legacy(s))
             for t, v in tests.items():
-                out[f"{exp}/{rung}_s{seed}/{t}"] = dict(exp=exp, rung=rung, seed=int(seed), test=t, **metrics(model, *v))
+                out.setdefault(f"_hold/{t}", metrics(None, *v))
+                out[f"{exp}/{rung}_s{seed}/{t}"] = dict(exp=exp, rung=rung, seed=int(seed), test=t, legacy=legacy(s), **metrics(model, *v))
     fn = os.path.join(ROOT, "eval", "results", "ladder_cross.json")
     json.dump(out, open(fn, "w"), indent=1)
 
     print("\n1초 롤아웃. 셀 = vy·r 정규화 오차 (시드 평균 ± 표준편차) / vx [m/s] / 발산 창 수")
-    for t in tests:
+    for t in ("D7", "D1"):
         h = out[f"_hold/{t}"]["1.0s"]
         print(f"\n[{t} 시험]  현재값 유지 {h['n_vyr']:.3f} / {h['raw'][0]:.2f}")
         print(f"{'':6s} " + " ".join(f"{r:>24s}" for r in RUNGS))

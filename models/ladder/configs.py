@@ -84,12 +84,40 @@ GOLF_D7_PEDAL = VehicleConfig(
 )
 
 
-def golf(lon="force", grade=False):
-    """lon: 'force' | 'pedal', grade: True 면 경사 채널(우리 방식) 사용 → use_grade=True, 이름에 _G."""
+# ------------------------------------------------------------ [11/19 팀 기준] Golf = 팀원 GOLF_THUNDERHILL 과 같은 값
+# 팀 결정(11/19): 시뮬레이터·차량 제원은 팀원 것 (팀원 저장소 deep_dynamics/golf/configs.py GOLF_THUNDERHILL).
+#   m 1496.9 kg, lf 1.026 / lr 1.604 m, 앞 제동 몫 0.75, 타이어 초기값 Df 10750·Dr 6870, Bf 6.1·Br 8.4,
+#   Iz 1797, 저항 176 N + 0.40 v² (초기값으로만 쓰고 학습). lon = Fxf = 0.699·구동력 − 앞 제동력 (data.ladder_data.fxf_team)
+# 위의 GOLF_D7_* (m 1630, 우리 Golf 시뮬레이터 값)는 11/19 이전 체크포인트를 불러올 때만 쓴다 (golf(..., legacy=True)).
+_GOLF_TEAM_PHYS = [
+    ("Bf", 6.1, 2.0, 30.0), ("Cf", 1.3, 0.5, 2.0), ("Df", 10750.0, 100.0, 25000.0), ("Ef", -0.5, -2.0, 0.0),
+    ("Br", 8.4, 2.0, 30.0), ("Cr", 1.3, 0.5, 2.0), ("Dr", 6870.0, 100.0, 25000.0), ("Er", -0.5, -2.0, 0.0),
+    ("Cr0", 176.0, 0.0, 2000.0), ("Cr2", 0.40, 0.0, 3.0), ("Iz", 1797.0, 800.0, 4000.0),
+    ("kb", 0.0, -1.5, 1.5),
+    ("ds", 0.0, -1.0, 1.0)]
+GOLF_TEAM_FORCE = VehicleConfig(
+    name="GOLF_TEAM_FORCE", m=1496.9, lf=1.026, lr=1.604, dt=0.04, hist=8, lon_input="force",
+    brake_front_share=0.75, axle_fmax0=(10750.0, 6870.0), phys=_GOLF_TEAM_PHYS,
+    note="팀원 GOLF_THUNDERHILL 과 같은 값. lon = Fxf (N) = 0.699·구동력 − 앞 제동력, data.ladder_data.d7_segments(lon='force')",
+)
+GOLF_TEAM_PEDAL = VehicleConfig(
+    name="GOLF_TEAM_PEDAL", m=1496.9, lf=1.026, lr=1.604, dt=0.04, hist=8, lon_input="pedal",
+    axle_fmax0=(10750.0, 6870.0),
+    phys=_GOLF_TEAM_PHYS + [("Cm1", 6500.0, 100.0, 20000.0), ("Cm2", 80.0, 0.0, 400.0), ("Cb", 13900.0, 100.0, 30000.0)],
+    note="pedal 비교용. 차량 값은 팀 기준, 구동·제동 계수 초기값은 GOLF_D7_PEDAL 과 같음",
+)
+
+
+def golf(lon="force", grade=False, legacy=False):
+    """lon: 'force' | 'pedal', grade: True 면 경사 채널(우리 방식) 사용 → use_grade=True, 이름에 _G.
+    legacy: True 면 11/19 이전 우리 제원(GOLF_D7_*, m 1630). 이전 체크포인트를 불러올 때만."""
     from dataclasses import replace
-    c = GOLF_D7_FORCE if lon == "force" else GOLF_D7_PEDAL
+    if legacy:
+        c = GOLF_D7_FORCE if lon in ("force", "force_old") else GOLF_D7_PEDAL
+    else:
+        c = GOLF_TEAM_FORCE if lon == "force" else GOLF_TEAM_PEDAL
     return replace(c, use_grade=True, name=c.name + "_G") if grade else c
 
 
-ALL = {c.name: c for c in (AV21_IAC, CORVETTE_REVS, GTI_THUNDERHILL, GOLF_D7_FORCE, GOLF_D7_PEDAL,
-                           golf("force", True), golf("pedal", True))}
+ALL = {c.name: c for c in (AV21_IAC, CORVETTE_REVS, GTI_THUNDERHILL, GOLF_D7_FORCE, GOLF_D7_PEDAL, GOLF_TEAM_FORCE, GOLF_TEAM_PEDAL,
+                           golf("force", True), golf("pedal", True), golf("force", True, True), golf("pedal", True, True))}

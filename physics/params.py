@@ -86,6 +86,7 @@ F1TENTH = VehicleParams(
     noise_std=dict(ux=0.02, uy=0.02, r=0.02, ax=0.3, ay=0.3),
 )
 
+# [11/19] 이 GOLF 프리셋(우리 Golf 시뮬레이터, m 1630)은 쓰지 않는다. 팀 기준 차량·시뮬레이터는 팀원 것 (docs/status_2026-11-19.md).
 # 풀스케일 Golf (D7 데이터상 이름 "VW Golf", 엔진·LSD·구동 단서로 GTI로 추정): D7(Stanford 2025, Thunderhill West)으로 추정
 # (physics/golf_sysid.py --fix a=1.05 --slope, physics/golf_fit_slope.json).
 # 공개 제원이 없어 고정한 값: 질량 1630 kg(브레이크 힘-감속도 관계로 추정), 축거 2.63 m(제조사),

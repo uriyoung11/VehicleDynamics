@@ -28,7 +28,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path[:0] = [os.path.join(ROOT, "models", "ladder"), ROOT]
 import ladder, configs                                               # noqa: E402
 from data.datasets import D7_DIR, D7_K_DRIVE, D7_K_BRAKE             # noqa: E402
-from data.ladder_data import _road_lookup, TRACK                     # noqa: E402
+from data.ladder_data import _road_lookup, fxf_team, TRACK           # noqa: E402
 
 plt.rcParams["animation.ffmpeg_path"] = imageio_ffmpeg.get_ffmpeg_exe()
 for f in ["Malgun Gothic", "NanumGothic"]:          # 팀원 원본의 NanumSquare 는 °·← 글자가 없다
@@ -46,7 +46,7 @@ COL = {"R1": "#4C8DF6", "R2": "#2FBF71", "R3": "#3CC6C6", "R4": "#B07CF2", "R5":
 COL2 = {"R1": "#A9C8FB", "R2": "#9BE6BD", "R3": "#9DE3E3", "R4": "#D9C0FA", "R5": "#FAC49C", "R6": "#F0A9A9"}  # 두 번째 실험(옅은 색)
 KO = {"R1": "물리", "R2": "물리+보정", "R3": "신경망 타이어", "R4": "DD식", "R5": "신경망", "R6": "블랙박스"}
 EXP_KO = {"base": "D7만", "d1": "+D1", "pedal": "페달", "road_none": "노면 없음", "road_bank": "기울기만", "step1": "1스텝"}
-RUN_KO = {"2023-10_4": "D7 시험 주행 2023-10_4", "2023-11_3": "D7 시험 주행 2023-11_3", "2023-11_8": "D7 시험 주행 2023-11_8"}
+RUN_KO = {"2023-10_1": "D7 시험 주행 2023-10_1", "2023-11_1": "D7 시험 주행 2023-11_1", "2023-11_5": "D7 시험 주행 2023-11_5"}   # 팀원 분할 시험 (11/19)
 
 
 # ---------------------------------------------------------------- 데이터
@@ -54,11 +54,14 @@ def load_run(run):
     """D7 주행 하나를 25 Hz 로: 상태·입력(force, 기울기+경사)·위치·차 방향. vx > 5 인 가장 긴 구간."""
     cols = ["Vx_mps", "Vy_mps", "yawRate_radps", "roadWheelAngle_rad", "engineTorque_Nm", "GearRatio",
             "brake_fl_N", "brake_fr_N", "posE_m", "posN_m", "Ve_mps", "Vn_mps", "axCG_mps2", "ayCG_mps2"]
-    a = pd.read_csv(os.path.join(D7_DIR, run + ".csv"), comment="#", usecols=cols)[cols].to_numpy(np.float64)
+    extra = ["wheelspeed_fl", "wheelspeed_fr", "engine_rpm", "throttleCmd_percent"]
+    df = pd.read_csv(os.path.join(D7_DIR, run + ".csv"), comment="#", usecols=cols + extra)
+    a = np.c_[df[cols].to_numpy(np.float64), fxf_team(df)]               # 마지막 열 = 팀 기준 앞바퀴 힘 (200 Hz에서 계산)
     n = len(a) // 8 * 8
     a = a[:n].reshape(-1, 8, a.shape[1]).mean(1)
     vx, vy, r, delta = a[:, 0], a[:, 1], a[:, 2], a[:, 3]
-    lon = D7_K_DRIVE / D7_K_BRAKE * a[:, 4] * a[:, 5] - (a[:, 6] + a[:, 7])
+    lon = a[:, -1]                                                  # 팀 기준 (11/19)
+    lon_old = D7_K_DRIVE / D7_K_BRAKE * a[:, 4] * a[:, 5] - (a[:, 6] + a[:, 7])   # 11/19 이전 체크포인트용
     road = _road_lookup()(a[:, 8:10])                              # [bank, grade]
     # 차 방향 = 이동 방향 − 미끄럼각 (팀원 영상과 같은 방식)
     head = np.unwrap(np.arctan2(a[:, 11], a[:, 10])) - np.arctan2(vy, vx)
@@ -66,7 +69,7 @@ def load_run(run):
     e = np.flatnonzero(np.diff(np.r_[0, ok.astype(int), 0]))
     i, j = max(zip(e[::2], e[1::2]), key=lambda p: p[1] - p[0])
     sl = slice(i, j)
-    return dict(s=np.c_[vx, vy, r][sl], lon=lon[sl], delta=delta[sl], bank=road[sl, 0], grade=road[sl, 1],
+    return dict(s=np.c_[vx, vy, r][sl], lon=lon[sl], lon_old=lon_old[sl], delta=delta[sl], bank=road[sl, 0], grade=road[sl, 1],
                 x=a[sl, 8], y=a[sl, 9], head=head[sl], ax=a[sl, 12], ay=a[sl, 13])
 
 
@@ -174,9 +177,10 @@ def main(a):
         exp, rung = spec.split("/")
         p = os.path.join(CKPT, exp, f"{rung}_s{a.seed}.pt")
         s = json.load(open(p[:-3] + ".json"))["spec"]
-        cfg = configs.golf(s["lon"], s["road"] == "bank+grade")
+        old = s.get("vehicle") != "team"                                 # 11/19 이전 체크포인트: 우리 제원·이전 힘 정의
+        cfg = configs.golf(s["lon"], s["road"] == "bank+grade", legacy=old)
         assert s["lon"] == "force", "영상은 force 입력 모델만 (페달 입력은 따로 불러야 함)"
-        su = np.concatenate([sg["s"], u_of(sg, s["road"])], 1)
+        su = np.concatenate([sg["s"], u_of(dict(sg, lon=sg["lon_old"]) if old else sg, s["road"])], 1)
         hist = torch.tensor(np.stack([su[k - H + 1:k + 1] for k in ks]), dtype=torch.float32)
         U = torch.tensor(np.stack([su[k + 1:k + NP, 3:] for k in ks]), dtype=torch.float32)
         pred = ladder.rollout(ladder.load_model(p, cfg), hist, U)     # (B, NP, 3) = k+1 .. k+NP 의 상태
@@ -198,8 +202,9 @@ def main(a):
     vx, vy, r = sg["s"].T
     ax_g, ay_g = sg["ax"] / 9.81, sg["ay"] / 9.81
     lon, delta = sg["lon"], sg["delta"]
-    cfgb = configs.golf("force", True)
-    Pw = {k: float(v) for k, v in zip(cfgb.pnames, ladder.load_model(os.path.join(CKPT, "base", "R1_s0.pt"), cfgb).g.values())}
+    pb = os.path.join(CKPT, "base", "R1_s0.pt")
+    cfgb = configs.golf("force", True, legacy=json.load(open(pb[:-3] + ".json"))["spec"].get("vehicle") != "team")
+    Pw = {k: float(v) for k, v in zip(cfgb.pnames, ladder.load_model(pb, cfgb).g.values())}
     af = delta - np.arctan2(cfgb.lf * r + vy, np.maximum(vx, 1))
     ar = np.arctan2(cfgb.lr * r - vy, np.maximum(vx, 1))
     grid = torch.linspace(0.001, 0.4, 2000)
@@ -353,7 +358,7 @@ def main(a):
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("--run", default="2023-11_3", help="D7 시험 주행: 2023-10_4, 2023-11_3, 2023-11_8")
+    ap.add_argument("--run", default="2023-11_1", help="D7 시험 주행 (팀원 분할): 2023-10_1, 2023-11_1, 2023-11_5")
     ap.add_argument("--models", nargs="+", default=["base/R1", "base/R2", "base/R4", "base/R5"])
     ap.add_argument("--horizon", type=float, default=1.0, help="예측 길이 s (팀 계획 길이 1초. 팀원 원본 영상은 2초)")
     ap.add_argument("--t0", type=float, default=0.0)

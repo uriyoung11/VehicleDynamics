@@ -25,7 +25,7 @@ import ladder, configs                                   # noqa: E402
 from train import fit, windows                           # noqa: E402
 from data.ladder_data import d7_segments, d1_segments    # noqa: E402
 
-BASE = dict(lon="force", road="bank+grade", d1=0, H=25)
+BASE = dict(lon="force", road="bank+grade", d1=0, H=25, vehicle="team")   # vehicle: 'team' = 11/19 팀 기준 제원·힘 정의
 EXPS = dict(base={}, d1=dict(d1=1), pedal=dict(lon="pedal"), road_none=dict(road="none"),
             road_bank=dict(road="bank"), step1=dict(H=1))
 CKPT = os.path.join(ROOT, "checkpoints", "ladder")
@@ -40,15 +40,24 @@ def spec_of(exp, best=None):
     return s
 
 
+def legacy(s):
+    """11/19 이전 체크포인트 (spec 에 vehicle 키가 없음): 우리 제원(m 1630)과 이전 힘 정의로 불러야 한다."""
+    return s.get("vehicle") != "team"
+
+
+def lon_of(s):
+    return "force_old" if legacy(s) and s["lon"] == "force" else s["lon"]
+
+
 def cfg_of(s):
-    return configs.golf(s["lon"], s["road"] == "bank+grade")
+    return configs.golf(s["lon"], s["road"] == "bank+grade", legacy=legacy(s))
 
 
 def data_of(s, split):
-    segs = d7_segments(split, s["lon"], s["road"])
+    segs = d7_segments(split, lon_of(s), s["road"])
     if split == "train" and s["d1"]:
         assert s["lon"] == "force", "D1에는 페달 기록이 없다"
-        segs += d1_segments("train", s["road"])
+        segs += d1_segments("train", s["road"], m_golf=1630.0 if legacy(s) else 1496.9)
     return segs
 
 
@@ -91,9 +100,9 @@ def evaluate(args):
         for p in sorted(glob.glob(os.path.join(CKPT, exp, "*.pt"))):
             meta = json.load(open(p[:-3] + ".json"))
             s = meta["spec"]; cfg = cfg_of(s)
-            key = (s["lon"], s["road"])
+            key = (lon_of(s), s["road"])
             if key not in cache:
-                X, Y, U = windows(d7_segments("test", s["lon"], s["road"]), cfg.hist, horizon=25, stride=5)
+                X, Y, U = windows(d7_segments("test", lon_of(s), s["road"]), cfg.hist, horizon=25, stride=5)
                 Xt, Yt, Ut = (torch.tensor(z) for z in (X, Y, U))
                 std = Yt.reshape(-1, 3).std(0)
                 cache[key] = (Xt, Yt, Ut, std)
@@ -104,7 +113,7 @@ def evaluate(args):
             if rung in ("R1", "R2", "R3"):
                 v = model.g.values().tolist()
                 out[f"{exp}/{rung}_s{seed}"]["coeffs"] = dict(zip(cfg.pnames, v))
-    Xt, Yt, Ut, std = cache[("force", "bank+grade")]
+    Xt, Yt, Ut, std = cache[next(k for k in cache if k[1] == "bank+grade" and k[0].startswith("force"))]
     out["_hold"] = metrics(None, Xt, Yt, Ut, std)
     os.makedirs(os.path.join(ROOT, "eval", "results"), exist_ok=True)
     fn = os.path.join(ROOT, "eval", "results", "ladder_ablation.json")
