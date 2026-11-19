@@ -191,9 +191,9 @@ D3 학습 데이터는 트랙이 아니라 무작위 조작(조향·가속 패�
 - Spielberg 기본 장면: 마른 μ 0.7, 젖은 구간 μ 0.55 (약 3.6초부터 25 m), 15.7초 주행
 - 학습 모델: `checkpoints/f1tenth_v3_trial` (D3 f1tenth trial, 학습 23분, 시드 0)
 - MPPI K 256, H 20 × 0.05초. 방식 B의 속도 상한은 7 m/s (방식 A의 v_max와 같음)
-- 그림: 방식 A [figures/mpc_A.png](figures/mpc_A.png), 방식 B [figures/mpc_B.png](figures/mpc_B.png)
+- 그림: 방식 A [figures/mpc_A.png](../../../docs/figures/mpc_A.png), 방식 B [figures/mpc_B.png](../../../docs/figures/mpc_B.png)
 - 영상(로컬 `viz/out/mpc/`): `mpc_A_single.mp4`, `mpc_B_single.mp4` (모든 차를 한 화면에), `mpc_A_panels.mp4`, `mpc_B_panels.mp4` (모델마다 칸, 정답 μ MPC 고스트). Rerun 분석 기록 `mpc_AB.rrd`
-- 한 장면: [figures/mpc_A_single_frame.png](figures/mpc_A_single_frame.png), [figures/mpc_B_single_frame.png](figures/mpc_B_single_frame.png), [figures/mpc_A_frame.png](figures/mpc_A_frame.png), [figures/mpc_B_frame.png](figures/mpc_B_frame.png)
+- 한 장면: [figures/mpc_A_single_frame.png](../../../docs/figures/mpc_A_single_frame.png), [figures/mpc_B_single_frame.png](../../../docs/figures/mpc_B_single_frame.png), [figures/mpc_A_frame.png](../../../docs/figures/mpc_A_frame.png), [figures/mpc_B_frame.png](../../../docs/figures/mpc_B_frame.png)
 
 | 제어기 | A: 최소 여유 | A: 결과 | B: 최소 여유 | B: 평균 속도 | B: 결과 |
 |---|---|---|---|---|---|

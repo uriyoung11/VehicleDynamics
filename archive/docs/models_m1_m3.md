@@ -1,6 +1,6 @@
 # M1~M3 설계 (11/12)
 
-코드: [models/hybrid.py](../models/hybrid.py). 학습·평가는 M0·B1과 같은 [models/train.py](../models/train.py), [eval/evaluate.py](../eval/evaluate.py)를 쓴다.
+코드: [models/hybrid.py](../../models/hybrid.py). 학습·평가는 M0·B1과 같은 [models/train.py](../../models/train.py), [eval/evaluate.py](../../eval/evaluate.py)를 쓴다.
 
 ## 공통 규칙
 
@@ -94,7 +94,7 @@ D2 논문은 μ를 칼만 필터(UKF) 상태로 추정했다. 우리는 MPC와 U
 
 ## 검증한 것
 
-[tests/test_physics.py](../tests/test_physics.py)와 별개로, 구현 직후 확인한 내용이다.
+[tests/test_physics.py](../../tests/test_physics.py)와 별개로, 구현 직후 확인한 내용이다.
 
 - M1~M3가 D3·D1·D2 데이터에서 출력 모양, 유한값, 기울기 전달이 모두 정상이다.
 - M1의 초기 예측이 B1과 정확히 같다.

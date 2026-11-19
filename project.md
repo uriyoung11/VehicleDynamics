@@ -1,5 +1,7 @@
 # 신경망 차량 모델로 한계 주행하기 — 프로젝트 개요 보고서
 
+> **[11/19] 현재 기준 문서는 [docs/status_2026-11-19.md](docs/status_2026-11-19.md)다.** 아래는 11/5 계획과 11/17 상태로, 기록용이다. 링크된 이전 문서는 `archive/docs/`에 있다.
+
 KUBIG · Team 물리와 AI · 2026-11-05 (11/17 현재 상태 반영)
 
 ## 현재 상태 (11/17)
@@ -8,10 +10,10 @@ KUBIG · Team 물리와 AI · 2026-11-05 (11/17 현재 상태 반영)
 
 | 항목 | 11/5 계획 | 지금 |
 |---|---|---|
-| 학습 모델 | M0~M3, B1, B2(GP) | M0~M3, B1 구현 완료 ([docs/models_m1_m3.md](docs/models_m1_m3.md)). B2(GP)는 미구현. Deep Dynamics식 모델은 비교 후보로 검토 중 |
-| 실데이터 | D1, D2 주력, D4·D5 보조 | D1(GTI) + **D7(Stanford 2025 Golf, 같은 Thunderhill)** 을 풀스케일 한계 실데이터로, D2는 실제 μ 변화 검증용. D4는 쓰지 않음. D5(AV-21)는 한계 주행 데이터가 아님 ([docs/dataset_survey_2026-11-12.md](docs/dataset_survey_2026-11-12.md), [docs/deep_dynamics_analysis_2026-11-12.md](docs/deep_dynamics_analysis_2026-11-12.md)) |
-| 제어 (RQ5) | MPC 폐루프 경로 추종 | MPPI 구현. 방식 A(목표 속도 추종)와 B(진행 최대화) 비교 중. 정답 μ MPC도 실패할 만큼 MPPI가 불안정해 안정화가 먼저 ([docs/mpc_comparison_design_2026-11-16.md](docs/mpc_comparison_design_2026-11-16.md)) |
-| 진행 중 | | 여러 차 데이터 혼합 학습(GTI + Golf)과 모델 입출력 형식 비교 ([docs/mixing_io_format_2026-11-17.md](docs/mixing_io_format_2026-11-17.md)) |
+| 학습 모델 | M0~M3, B1, B2(GP) | M0~M3, B1 구현 완료 ([docs/models_m1_m3.md](archive/docs/models_m1_m3.md)). B2(GP)는 미구현. Deep Dynamics식 모델은 비교 후보로 검토 중 |
+| 실데이터 | D1, D2 주력, D4·D5 보조 | D1(GTI) + **D7(Stanford 2025 Golf, 같은 Thunderhill)** 을 풀스케일 한계 실데이터로, D2는 실제 μ 변화 검증용. D4는 쓰지 않음. D5(AV-21)는 한계 주행 데이터가 아님 ([docs/dataset_survey_2026-11-12.md](docs/dataset_survey_2026-11-12.md), [docs/deep_dynamics_analysis_2026-11-12.md](archive/docs/deep_dynamics_analysis_2026-11-12.md)) |
+| 제어 (RQ5) | MPC 폐루프 경로 추종 | MPPI 구현. 방식 A(목표 속도 추종)와 B(진행 최대화) 비교 중. 정답 μ MPC도 실패할 만큼 MPPI가 불안정해 안정화가 먼저 ([docs/mpc_comparison_design_2026-11-16.md](archive/docs/mpc_comparison_design_2026-11-16.md)) |
+| 진행 중 | | 여러 차 데이터 혼합 학습(GTI + Golf)과 모델 입출력 형식 비교 ([docs/mixing_io_format_2026-11-17.md](archive/docs/mixing_io_format_2026-11-17.md)) |
 | 계산 자원 | GPU 예산 | 노트북 CPU로 학습. MPPI 대량 주행은 코랩 GPU 사용 예정 |
 
 ## 요약

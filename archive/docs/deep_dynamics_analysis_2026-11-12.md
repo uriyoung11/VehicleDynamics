@@ -39,7 +39,7 @@
 
 ## 2. 전처리 (`tools/csv_parser.py`)
 
-![파서가 쓰는 구간](figures/deep_dynamics_parser_coverage.png)
+![파서가 쓰는 구간](../../../docs/figures/deep_dynamics_parser_coverage.png)
 
 **처리 순서**
 
@@ -149,4 +149,4 @@ Deep Pacejka(`deep_pacejka_iac.yaml`)는 GRU 5층(256)에 범위 제한이 없�
 
 - 통계와 그림은 `deep_dynamics/data`의 CSV를 내려받아 계산했다.
 - 원본 데이터와 저장소는 GPL-3.0이다. 우리 저장소에는 넣지 않고, 각자 받아 `data/` 아래(로컬 전용)에 둔다.
-- 그림: [figures/deep_dynamics_parser_coverage.png](figures/deep_dynamics_parser_coverage.png)
+- 그림: [figures/deep_dynamics_parser_coverage.png](../../../docs/figures/deep_dynamics_parser_coverage.png)

@@ -124,7 +124,9 @@ def load_d3(root, split, use_meas=True):
 # D7: Stanford 2025 VW Golf, Thunderhill West (Mori et al. 2025, purl.stanford.edu/hh613qz0317, CC BY-SA 4.0)
 D7_DIR = os.path.join(ROOT, "data", "d7")
 D7_DUP = {"2023-10_2", "2023-10_3"}            # 2023-10, 2023-10_1과 바이트 단위로 같은 파일(md5 확인)
-D7_SPLIT = {"val": ["2023-10_6", "2023-11_1", "2023-11_10"], "test": ["2023-10_4", "2023-11_3", "2023-11_8"]}
+# [팀 결정 11/19] 팀원 분할로 통일 (data/d7_split_team.json = 팀원 저장소 deep_dynamics/data/golf/split.json, 시드 0).
+# 이전 우리 분할: val 10_6·11_1·11_10, test 10_4·11_3·11_8 (11/19 이전 사다리 결과 ①~⑥·차량 간 평가는 이 분할)
+D7_SPLIT = {"val": ["2023-11_4", "2023-11_7", "2023-11_8"], "test": ["2023-10_1", "2023-11_1", "2023-11_5"]}
 D7_MIN_UX = 2.0                                # D1·풀스케일 프리셋의 ux_min_valid와 같음
 
 

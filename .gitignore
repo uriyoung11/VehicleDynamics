@@ -9,3 +9,9 @@ viz/out/
 
 # 팀원 공유 압축 파일 등 (로컬 보관)
 *.zip
+
+# 데이터 폴더 안에서 올리는 작은 설정 파일 (팀 분할, 실측 폭 위치)
+!data/d7_split_team.json
+!data/tracks/
+data/tracks/*
+!data/tracks/thunderhill_width_points.csv

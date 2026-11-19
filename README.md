@@ -1,46 +1,42 @@
 # VehicleDynamics
 
-KUBIG 프로젝트 "신경망 차량 모델로 한계 주행하기". 전체 계획과 현재 상태는 [project.md](project.md), 진행 기록은 [docs/](docs/)에 있다.
+KUBIG 프로젝트 "신경망 차량 모델로 한계 주행하기" (Team 물리와 AI). **현재 기준과 팀 결정은 [docs/status_2026-11-19.md](docs/status_2026-11-19.md)**.
+팀 공용 저장소는 팀원 저장소(physics_for_driving)이고, 이 저장소는 내 작업 기록이다. 이전 방향의 코드·문서는 [archive/](archive/)에 있다.
 
 ## 폴더 구조
 
 | 폴더 | 내용 |
 |---|---|
-| [physics/](physics/) | 미분 가능한 자전거 모델(P0~P2), 타이어 모델, 차량 프리셋(`fullscale` GTI, `f1tenth` Xray), CommonRoad 검증 |
-| [data/](data/) | 데이터 로더(D1, D2, D3, D7, 조합·간격 변경)와 합성 데이터 생성기. 데이터 파일 자체는 git에 올리지 않는다 |
-| [models/](models/) | 기준 모델 M0(신경망), B1(피팅한 물리 모델), M1~M3(물리 구조 모델)과 학습 스크립트 |
-| [eval/](eval/) | 공통 평가 코드(1스텝, 0.5초·1초 롤아웃, 원단위 RMSE, 현재값 유지 기준선), 혼합 실험 평가, 결과 JSON |
-| [control/](control/) | MPPI 제어기, 장면 주행 비교(방식 A 목표 속도 추종 / B 진행 최대화), 주행 영상, Rerun 기록 |
-| [repro/spielberg2019/](repro/spielberg2019/) | 원논문(Spielberg et al. 2019) PyTorch 재현 |
-| [viz/](viz/) | 시각화. `demo_track.py`(matplotlib), `demo_rerun.py`(Rerun, 팀 분석용), `replay.py`(공용 장면 파일), `tools/`(Blender 발표 영상 등) |
-| [tests/](tests/) | 물리 모델·생성기 검증 (`python tests/test_physics.py`) |
-| [docs/](docs/) | 결과 정리 문서와 그림 |
+| [data/](data/) | D7(Golf)·D1(GTI) 로더(`datasets.py`, 사다리 형식 `ladder_data.py`), 트랙 만들기(`thunderhill_west.py` 중앙선·노면 지도, `thunderhill_track_v2.py` 트랙 npz), 팀원 분할(`d7_split_team.json`). 데이터 파일은 git에 올리지 않는다 |
+| [models/ladder/](models/ladder/) | 팀 공통 기준 모델 R1~R6(팀원 사다리) + 경사 채널, 비교 실험·차량 간 평가 |
+| [physics/](physics/) | 자전거 모델·타이어·차량 프리셋 (데이터 로더가 씀). 시뮬레이터로는 쓰지 않는다 |
+| [viz/](viz/) | `ladder_predict.py`: 실제 주행을 재생하며 모델의 1초 예측선을 그리는 영상 |
+| [eval/results/](eval/results/) | 사다리 비교 결과 JSON (11/19 이전 분할) |
+| [docs/](docs/) | 현재 상태, 트랙·시뮬레이터 문서, 그림 |
+| [archive/](archive/) | 이전 모델(M0~M3, B1)·MPPI·Golf 시뮬레이터·시각화·문서 |
 
 ## git에 없는 폴더 (각자 로컬)
 
 | 폴더 | 내용 | 만드는 법 |
 |---|---|---|
-| `data/scirob_submission/` | D1 원논문 데이터·코드 | [Stanford 저장소](https://purl.stanford.edu/zb950hd3384)에서 받기 |
-| `data/d2/` | D2 CSV 4개 | [D2 저장소](https://github.com/SzalonyJohny/Learning-dynamics-models-for-velocity-estimation)에서 받기 |
-| `data/d7/` | D7 Golf CSV 22개 | [Stanford 저장소](https://purl.stanford.edu/hh613qz0317)에서 받기 ([docs/mixing_io_format_2026-11-17.md](docs/mixing_io_format_2026-11-17.md) 7절) |
-| `data/generated/` | D3 합성 데이터 (`*_v3_trial`) | `python -m data.synth --vehicle f1tenth --out data/generated/...` |
-| `data/tracks/` | 트랙 중심선 | 시각화 처음 실행 때 자동으로 받음 |
-| `checkpoints/` | 학습한 모델 (`mix/`는 혼합 실험) | `python -m models.train` |
-| `logs/` | 학습·생성 로그 | |
-| `viz/out/` | 영상, Rerun 기록, 캐시, MPC 주행 결과(`mpc/`) | 각 시각화 스크립트 실행 |
+| `data/d7/` | D7 Golf CSV 22개 | [Stanford 저장소](https://purl.stanford.edu/hh613qz0317)에서 받기 |
+| `data/scirob_submission/` | D1 GTI 데이터 (차량 간 평가용) | [Stanford 저장소](https://purl.stanford.edu/zb950hd3384)에서 받기 |
+| `data/tracks/` | OSM 캐시, 트랙 v3 | 아래 명령 (OSM은 처음 실행 때 자동으로 받음) |
+| `checkpoints/ladder/` | 사다리 모델 | `python models/ladder/run_ablation.py train ...` |
+| `viz/out/` | 영상 | 각 시각화 스크립트 |
 
 ## 자주 쓰는 명령
 
 ```
-python tests/test_physics.py                                      # 물리 검증
-python -m models.train --data d3:data/generated/f1tenth_v3_trial --model m0
-python -m models.train --data "d1+d7" --model m1 --out checkpoints/mix/d1+d7/m1_s0.pt   # 혼합 학습
-python -m eval.evaluate --data d1 --split test --ckpt "checkpoints/d1/*.pt"   # 평가
-python -m eval.mix_eval                                            # 혼합 실험 평가
-python -m control.run_scene --mode B --ctrl mppi_oracle mppi_m0    # MPC 장면 주행 (A: 목표 속도, B: 진행 최대화)
-python -m control.mpc_video --mode B --layout single               # MPC 주행 영상
-python -m viz.demo_rerun                                           # Rerun 분석 화면
-python -m viz.replay                                               # 공용 장면 파일 만들기
-blender -b -P viz/tools/blender_demo.py -- --fps 30                # 발표 영상 렌더링 (Blender 4.2 이상)
-python -m viz.tools.blender_compose                                # 렌더링 결과 합성 -> viz/out/tools/blender.mp4
+# 트랙 v3 (학습 파일로만, 팀원 분할)
+python -m data.thunderhill_west --split-json data/d7_split_team.json --out data/tracks/v3/ThunderhillWest_centerline_train.csv
+python -m data.thunderhill_track_v2 --center-csv data/tracks/v3/ThunderhillWest_centerline_train.csv --split-json data/d7_split_team.json --out data/tracks/v3
+python -m data.thunderhill_track_v2 --center-csv data/tracks/v3/ThunderhillWest_centerline_train.csv --split-json data/d7_split_team.json --width-points data/tracks/thunderhill_width_points.csv --out data/tracks/v3_local
+
+# 사다리 비교 실험, 차량 간 평가
+python models/ladder/run_ablation.py eval
+python models/ladder/cross_eval.py
+
+# 예측 영상
+python viz/ladder_predict.py --models R1 R2 R4 R5
 ```

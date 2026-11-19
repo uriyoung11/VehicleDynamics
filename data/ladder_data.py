@@ -28,7 +28,9 @@ import pandas as pd
 from data.datasets import D7_DIR, D7_DUP, D7_SPLIT, D7_K_DRIVE, D7_K_BRAKE, D1_DIR, D1_SPLIT
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-TRACK = os.path.join(ROOT, "data", "tracks", "ThunderhillWest_centerline.csv")
+# [11/19] 트랙 v3: 학습 파일(팀원 분할 train)로만 만든 중앙선·노면 지도. 만드는 법:
+#   python -m data.thunderhill_west --split-json data/d7_split_team.json --out data/tracks/v3/ThunderhillWest_centerline_train.csv
+TRACK = os.path.join(ROOT, "data", "tracks", "v3", "ThunderhillWest_centerline_train.csv")
 M_GOLF, M_GTI, BF_GOLF, BF_GTI = 1630.0, 1776.2, 0.75, 0.66
 HIST, MIN_LEN, VMIN = 8, 38, 5.0
 

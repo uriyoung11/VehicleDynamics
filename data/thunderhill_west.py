@@ -153,9 +153,17 @@ def main(argv=None):
     ap.add_argument("--car-half", type=float, default=0.9, help="osm: 차 반폭 [m]. 레이싱 라인(차 중심) 바깥으로 이만큼 노면이 있어야 한다")
     ap.add_argument("--window", type=int, default=15, help="osm: 폭을 볼 앞뒤 범위 [m]")
     ap.add_argument("--smooth", type=float, default=10.0, help="osm: 지도 중앙선 꺾임 다듬기 평활 폭 [m]. 0이면 다듬지 않음")
+    ap.add_argument("--split-json", default=None, help="분할 파일(json, train/val/test 목록). 주면 --split 파일만 쓴다 (시험 주행 정보가 지도에 섞이지 않게)")
+    ap.add_argument("--split", default="train")
+    ap.add_argument("--out", default=None, help="출력 csv (기본 data/tracks/ThunderhillWest_centerline.csv). 그림은 같은 폴더에 저장")
     args = ap.parse_args(argv)
     files = [f for f in sorted(glob.glob(os.path.join(ROOT, "data", "d7", "*.csv")))
              if os.path.basename(f)[:-4] not in ("2023-10_2", "2023-10_3")]
+    if args.split_json:
+        import json
+        keep = set(json.load(open(args.split_json, encoding="utf-8"))[args.split])
+        files = [f for f in files if os.path.basename(f)[:-4] in keep]
+        print(f"{args.split} 파일 {len(files)}개만 사용: {sorted(keep)}", flush=True)
     P = [positions(f, extra=True) for f in files]
     samples = np.vstack(P)                                         # [동, 북, 고도, 롤, 횡가속도]
     P = [p[:, :2] for p in P]
@@ -210,8 +218,9 @@ def main(argv=None):
     print(f"노면: 고도 범위 {z.max() - z.min():.1f} m, 경사 1~99분위 {np.degrees(np.percentile(grade, [1, 99])).round(1)}°, "
           f"좌우 기울기 1~99분위 {np.degrees(np.percentile(bank, [1, 99])).round(1)}°, "
           f"차체 롤 계수 {np.degrees(k_roll):.3f}°/(m/s²)", flush=True)
-    out = os.path.join(ROOT, "data", "tracks", "ThunderhillWest_centerline.csv")
-    os.makedirs(os.path.dirname(out), exist_ok=True)
+    out = args.out or os.path.join(ROOT, "data", "tracks", "ThunderhillWest_centerline.csv")
+    fig_dir = os.path.dirname(os.path.abspath(out)) if args.out else os.path.join(ROOT, "docs", "figures")
+    os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
     # 앞 4열은 f1tenth_racetracks 형식(load_track이 읽음). 뒤 3열: 고도 [m], 경사 [rad, 오르막 +], 좌우 기울기 [rad, D7 롤과 같은 부호]
     np.savetxt(out, np.c_[center, wr, wl, z, np.arctan(grade), bank], delimiter=",", fmt="%.5f",
                header=f"x_m, y_m, w_tr_right_m, w_tr_left_m, z_m, grade_rad, bank_rad  ({note}, data/thunderhill_west.py)")
@@ -230,7 +239,7 @@ def main(argv=None):
     ax.plot(*(center - nrm * wr[:, None]).T, color="k", lw=1)
     ax.plot(*center.T, color="#1f77b4", lw=1, ls="--", label="중심선")
     ax.set_aspect("equal"); ax.legend(loc="best"); ax.set_title(f"Thunderhill West ({note}, 한 바퀴 {L:.0f} m)", fontsize=10)
-    fig.tight_layout(); fig.savefig(os.path.join(ROOT, "docs", "figures", "thunderhill_west.png"), dpi=120)
+    fig.tight_layout(); fig.savefig(os.path.join(fig_dir, "thunderhill_west.png"), dpi=120)
 
     s_ = np.arange(len(center)) * 1.0
     fig, axs = plt.subplots(3, 1, figsize=(11, 7), sharex=True)
@@ -241,7 +250,7 @@ def main(argv=None):
         a.grid(alpha=0.3); a.axhline(0, color="k", lw=0.5)
     axs[2].set_xlabel("트랙 거리 [m]")
     axs[0].set_title("Thunderhill West 노면 (D7 20개 파일, 위치별 중앙값)")
-    fig.tight_layout(); fig.savefig(os.path.join(ROOT, "docs", "figures", "thunderhill_west_profile.png"), dpi=120)
+    fig.tight_layout(); fig.savefig(os.path.join(fig_dir, "thunderhill_west_profile.png"), dpi=120)
 
 
 if __name__ == "__main__":
